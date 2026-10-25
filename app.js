@@ -412,7 +412,7 @@ function parsearIcs(texto) {
   return eventos.filter(e => e.ini && e.titulo);
 }
 async function importarIcs(texto, calId, progreso) {
-  const evs = parsearIcs(texto); let ok = 0, mal = 0;
+  const evs = parsearIcs(texto); let ok = 0, mal = 0, error = '';
   for (const e of evs) {
     const cuerpo = {
       iCalUID: e.uid || uid() + '@mi-tracker', summary: e.titulo, description: e.desc || undefined,
@@ -420,11 +420,11 @@ async function importarIcs(texto, calId, progreso) {
       reminders: e.avisos.length ? { useDefault: false, overrides: e.avisos.slice(0, 5).map(m => ({ method: 'popup', minutes: m })) } : { useDefault: true }
     };
     try { await gjson(`${CAL}/calendars/${encodeURIComponent(calId)}/events/import`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) }); ok++; }
-    catch (err) { mal++; console.warn('import', e.titulo, err); if (err.message === 'auth') break; }
+    catch (err) { mal++; error = error || err.message; console.warn('import', e.titulo, err); if (err.message === 'auth') { error = 'se venció la sesión de Google, tocá Actualizar y cargala de nuevo'; break; } }
     progreso(ok + mal, evs.length);
   }
   S.evCarga = {}; S.ev = {};
-  return { ok, mal, total: evs.length };
+  return { ok, mal, total: evs.length, error };
 }
 
 /* ====================================================================== */
@@ -773,8 +773,10 @@ function vAjustes() {
   </section>
   <section class="card">
     <header><h2>Cargar la rutina en el calendario</h2></header>
-    <p class="nota">Subí un archivo .ics (como rutina-semanal-v17.ics) y lo cargo en el calendario que elijas. Si lo volvés a subir con cambios, actualiza los mismos eventos en vez de duplicarlos.</p>
-    <button class="btn" data-a="importar" ${DEMO || S.auth !== 'ok' ? 'disabled' : ''}>Elegir archivo .ics</button>
+    <p class="nota">Tu rutina semanal v17 ya viene adentro de la app: tocá el botón, elegí el calendario y listo. Para una versión nueva, elegí el archivo .ics.</p>
+    ${S.auth !== 'ok' && !DEMO ? '<p class="nota">Primero entrá con Google.</p>' : ''}
+    <div class="fila-b"><button class="btn prim" data-a="importarIncluida" ${DEMO || S.auth !== 'ok' ? 'disabled' : ''}>Cargar mi rutina v17</button>
+    <button class="btn" data-a="importar" ${DEMO || S.auth !== 'ok' ? 'disabled' : ''}>Elegir otro archivo .ics</button></div>
   </section>
   <section class="card">
     <header><h2>Plata</h2></header>
@@ -915,6 +917,25 @@ function hojaMedida(f) {
     <label class="campo"><span>Fecha</span><input id="md-f" class="in" type="date" value="${f}"></label>
     <div class="grilla2">${[['peso', 'Peso (kg)'], ['grasa', '% de grasa'], ['musculo', 'Masa muscular (kg)'], ['cintura', 'Cintura (cm)']].map(([k, t]) => `<label class="campo"><span>${t}</span><input id="md-${k}" class="in" type="text" inputmode="decimal" value="${esc(m[k] || '')}"></label>`).join('')}</div>
     <button class="btn prim ancho" data-a="guardarMedida">Guardar</button>`);
+}
+function hojaImportar(texto, nombre) {
+  const n = parsearIcs(texto).length;
+  if (!n) return aviso('Ese archivo no tiene eventos.');
+  const opciones = S.cals.filter(c => calEscribible(c.id));
+  if (!opciones.length) return aviso('No encontré calendarios donde puedas escribir. Probá Reconectar.');
+  const rut = opciones.find(c => /rutina/i.test(c.summary));
+  hoja(`<h3>Cargar ${n} eventos</h3><p class="nota">${esc(nombre)}. Se repiten solos cada semana y traen sus avisos. Si la volvés a cargar, actualiza los mismos eventos: no duplica.</p>
+    <label class="campo"><span>¿En qué calendario?</span><select id="im-c" class="in">${opciones.map(c => `<option value="${esc(c.id)}" ${c === rut ? 'selected' : ''}>${esc(c.summary)}</option>`).join('')}</select></label>
+    ${rut ? '' : '<p class="nota">Tip: si creás un calendario "Rutina" en Google Calendar (Configuración → Añadir calendario → Crear calendario), la podés mostrar u ocultar aparte.</p>'}
+    <p id="im-p" class="nota"></p><button class="btn prim ancho grande" id="im-ok">Cargar</button>`);
+  $('#im-ok').onclick = async () => {
+    $('#im-ok').disabled = true;
+    const calId = $('#im-c').value;
+    const r = await importarIcs(texto, calId, (i, t) => { $('#im-p').textContent = `Cargando ${i} de ${t}…`; });
+    const vis = cfg().cals || []; if (!vis.includes(calId)) setCfg({ cals: [...vis, calId] });
+    $('#im-p').textContent = r.mal ? `Cargué ${r.ok} de ${r.total}. ${r.mal} dieron error: ${r.error}` : `Listo: ${r.ok} eventos cargados.`;
+    $('#im-ok').textContent = 'Cerrar'; $('#im-ok').disabled = false; $('#im-ok').onclick = () => { cerrar(); render(); };
+  };
 }
 function hojaMetas() {
   const c = cfg();
@@ -1098,24 +1119,12 @@ const A = {
   },
   importar() {
     const inp = Object.assign(document.createElement('input'), { type: 'file', accept: '.ics,text/calendar' });
-    inp.onchange = async () => {
-      const file = inp.files[0]; if (!file) return;
-      const texto = await file.text(), n = parsearIcs(texto).length;
-      if (!n) return aviso('Ese archivo no tiene eventos.');
-      const opciones = S.cals.filter(c => calEscribible(c.id));
-      hoja(`<h3>Cargar ${n} eventos</h3><p class="nota">${esc(file.name)}. Te recomiendo un calendario aparte ("Rutina") para poder mostrarlo u ocultarlo. Se crea en calendar.google.com → Otros calendarios → +.</p>
-        <label class="campo"><span>¿En qué calendario?</span><select id="im-c" class="in">${opciones.map(c => `<option value="${esc(c.id)}">${esc(c.summary)}</option>`).join('')}</select></label>
-        <p id="im-p" class="nota"></p><button class="btn prim ancho" id="im-ok">Cargar</button>`);
-      $('#im-ok').onclick = async () => {
-        $('#im-ok').disabled = true;
-        const calId = $('#im-c').value;
-        const r = await importarIcs(texto, calId, (i, t) => { $('#im-p').textContent = `Cargando ${i} de ${t}…`; });
-        const vis = cfg().cals || []; if (!vis.includes(calId)) setCfg({ cals: [...vis, calId] });
-        $('#im-p').textContent = r.mal ? `Listo: ${r.ok} cargados, ${r.mal} con error (mirá la consola).` : `Listo: ${r.ok} eventos cargados.`;
-        $('#im-ok').textContent = 'Cerrar'; $('#im-ok').disabled = false; $('#im-ok').onclick = () => { cerrar(); render(); };
-      };
-    };
+    inp.onchange = async () => { const file = inp.files[0]; if (file) hojaImportar(await file.text(), file.name); };
     inp.click();
+  },
+  async importarIncluida() {
+    try { hojaImportar(await (await fetch('rutina.ics?v=17')).text(), 'Rutina semanal v17'); }
+    catch { aviso('No pude abrir la rutina. ¿Tenés señal?'); }
   },
   exportar() {
     const a = document.createElement('a');
