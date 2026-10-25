@@ -39,25 +39,27 @@ Cada vez que se cambie la app: subir el número `?v=` en `index.html` y `VERSION
 - **iPhone (Safari):** abrí la dirección → botón Compartir → **Agregar a inicio**.
 - **Android (Chrome):** menú ⋮ → **Instalar app**.
 
-## 4. Cargar la rutina en tu calendario
+## 4. Cargar tus datos (rutina, plan y medidas)
 
-1. En calendar.google.com (compu): **Otros calendarios → + → Crear calendario** → "Rutina". Conviene separado para poder ocultarlo.
-2. En la app: ⚙ → **Cargar la rutina en el calendario** → elegí `rutina-semanal-v17.ics` y el calendario "Rutina".
-   Si después llega una v18, subila igual: actualiza los mismos eventos en vez de duplicarlos (siempre que mantenga los UID).
-3. ⚙ → **Elegir calendarios**: tildá Rutina + tu calendario personal. La estrella marca dónde se crean las reuniones rápidas.
+Tus datos personales NO van en el código (el repo es público). Viven en un archivo `mi-tracker-datos.json` que arma Claude:
 
-Las comidas de cada día salen de los eventos que empiezan con Desayuno / Almuerzo / Merienda / Cena (el texto "HOY:" es el plan, "VARIANTES:" son las opciones para marcar "Cambié"). Si un día no hay eventos de comida, usa la rutina base de `rutina.js`.
+1. En la app: el cartel de Hoy "Cargá tu rutina, tu plan y tus medidas", o ⚙ → Datos → **Cargar archivo**.
+2. Elegí `mi-tracker-datos.json` (Descargas). Es una sola vez: después viaja por tu Drive al celu.
+
+- **Mi rutina** (Agenda → editar, o ⚙): tu semana tipo. Se edita ahí y vale para todas las semanas; un solo día se cambia tocando el evento en la Agenda. Admite "semana por medio" (los jueves de Santa Fe / curso).
+- **Mi plan** (Comidas → Mi plan): opciones de cada comida, cantidades y porciones. Si la nutri te cambia el plan, Claude arma un `.json` y lo cargás con **Cargar plan nuevo**: las comidas de la rutina se reacomodan solas.
+- **Avisos en el celu:** Mi rutina → "Pasar mi rutina a Google Calendar". En la app se sigue viendo una sola vez (manda la versión de la app).
 
 ## Cómo se usa
 
 - **Hoy:** lo que sigue en la agenda, hábitos para tildar, comidas (✓ la hice · ↺ cambié · ✗ no) y lo gastado.
-- **Agenda:** semana por días. Tocá un evento para moverlo (±15 min, +1 h, mañana, o fecha/hora). En eventos que se repiten podés mover "solo este día" o "todas las semanas" (solo la hora).
+- **Agenda:** semana por días. Tocá un evento para moverlo (±15 min, +1 h, mañana, o fecha/hora). En la rutina podés mover "solo este día" o "todos los lunes" (o el día que sea). En eventos de Google que se repiten, "todas las semanas" cambia solo la hora.
 - **Hábitos:** grilla semanal. Un toque ✓, dos ✗, tres lo borra. Racha 🔥. Abajo, tiempo en pantalla.
-- **Comidas:** marcar cada comida, contar intercambios (metas del primer cuadro del plan), resumen **Para la nutri** (compartir por WhatsApp o imprimir a PDF) y medidas.
+- **Comidas:** marcar cada comida, contar intercambios (metas del primer cuadro del plan), resumen **Para la nutri** (compartir por WhatsApp o imprimir a PDF) y tu cuerpo (mediciones, objetivo e informe completo).
 - **Plata:** + para cargar gasto / ingreso / inversión en pesos o dólares, por categoría. Resumen del mes y gastos por categoría. El dólar para convertir se carga en ⚙.
 
 ## Límites conocidos
 
 - **Tiempo en pantalla:** ni iPhone ni Android dejan que una web lo lea. Se carga a mano desde Ajustes → Tiempo en pantalla / Bienestar digital (30 s por día). Medirlo solo requeriría una app nativa de Android.
-- **Sesión de Google:** dura 1 hora. Después aparece "Reconectar" (un toque). Mientras tanto la app sigue andando y guarda en el celu; sincroniza al reconectar.
+- **Sesión de Google:** dura 1 hora. Se renueva sola al primer toque (puede aparecer y cerrarse una ventanita de Google). Mientras tanto la app sigue andando y guarda en el celu; sincroniza al reconectar.
 - **Sin señal:** abre igual y muestra la última agenda guardada.

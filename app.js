@@ -66,12 +66,43 @@ function cfg() {
   };
 }
 const setCfg = patch => cambiar('cfg:main', patch);
+const decimal = v => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : null; };
+const fmt = n => typeof n === 'number' ? n.toLocaleString('es-AR', { maximumFractionDigits: 1 }) : (n ?? '');
 
-if (!todos('habit:').length && !LS.get('sembrado')) {
-  [['Leer 20 minutos', 'hacer', '📖'], ['No fumar', 'dejar', '🚭'], ['Tomar la creatina', 'hacer', '💊'], ['2 litros de agua', 'hacer', '💧']]
-    .forEach(([nombre, tipo, emoji], i) => poner('habit:' + uid(), { nombre, tipo, emoji, orden: i }));
-  LS.set('sembrado', 1);
+/* ---------- Plan de comidas (opciones por comida, cantidades y porciones) ---------- */
+const PLAN_VACIO = { nombre: '', opciones: { desayuno: [], almuerzo: [], merienda: [], cena: [] }, cantidades: {}, metas: {} };
+function plan() {
+  const p = rec('plan:main');
+  return p ? { ...PLAN_VACIO, ...p, opciones: { ...PLAN_VACIO.opciones, ...(p.opciones || {}) }, cantidades: p.cantidades || {} } : PLAN_VACIO;
 }
+const metas = () => ({ ...(cfg().metas || {}), ...(plan().metas || {}) });
+const opcion = (tipo, n) => plan().opciones[tipo]?.find(o => o.n === n);
+
+/* ---------- Mi rutina: actividades que se repiten, guardadas en la app ----------
+   rut:<id>  { t, h, f, dias:[0-6] | fecha, quin:'A'|'B' (semana por medio), comida, plan, detalle }
+   rutx:<fecha>:<id>  cambios de un solo día { h, f, plan, oculto, extra } */
+const REF_A = new Date(2026, 9, 26); // lunes de una semana "A"
+const paridad = f => Math.abs(Math.round((lunes(deYmd(f)) - REF_A) / (7 * 864e5))) % 2 === 0 ? 'A' : 'B';
+const rutinas = () => todos('rut:').sort((a, b) => a.h.localeCompare(b.h));
+function rutinaDelDia(f) {
+  const d = deYmd(f).getDay(), par = paridad(f), out = [];
+  rutinas().forEach(r => {
+    const id = r.k.slice(4), o = rec(`rutx:${f}:${id}`);
+    const toca = r.fecha ? r.fecha === f : (r.dias || []).includes(d) && (!r.quin || r.quin === par);
+    if (o?.oculto || (!toca && !o?.extra)) return;
+    const pl = o?.plan || r.plan || '', ini = conHora(f, o?.h || r.h);
+    let fin = conHora(f, o?.f || r.f); if (fin <= ini) fin = sumar(fin, 1);
+    const op = r.comida ? opcion(r.comida, pl) : null;
+    out.push({
+      id: `r:${f}:${id}`, rid: id, calId: 'rutina', rutina: true, titulo: r.t, ini, fin, todoDia: false, color: '#0d9488',
+      serie: 'rutina', comida: r.comida || null, plan: pl, cambiado: !!(o && !o.oculto),
+      desc: r.comida ? [pl, op?.d].filter(Boolean).join(': ') : (r.detalle || ''), link: ''
+    });
+  });
+  return out;
+}
+const esComida = e => e.rutina ? !!e.comida : RE_COMIDA.test(e.titulo);
+
 
 /* ---------- estado de pantalla ---------- */
 const S = {
@@ -79,6 +110,17 @@ const S = {
   ev: {}, evCarga: {}, cals: LS.get('cals', []), auth: 'no', sync: 'local', filtroMov: 'todo',
   rango: 'esta'
 };
+
+if (!todos('habit:').length && !LS.get('sembrado')) {
+  [['Leer 20 minutos', 'hacer', '📖'], ['No fumar', 'dejar', '🚭'], ['Tomar la creatina', 'hacer', '💊'], ['2 litros de agua', 'hacer', '💧']]
+    .forEach(([nombre, tipo, emoji], i) => poner('habit:' + uid(), { nombre, tipo, emoji, orden: i }));
+  LS.set('sembrado', 1);
+}
+if (DEMO && !todos('rut:').length && !LS.get('rutDemo')) {
+  RUTINA_DEMO.items.forEach(x => poner('rut:' + uid(), x));
+  poner('plan:main', RUTINA_DEMO.plan);
+  LS.set('rutDemo', 1);
+}
 
 /* ---------- Google: login ---------- */
 let TOKEN = LS.get('tok', null);
@@ -160,7 +202,7 @@ function normalizar(e, calId) {
   return {
     id: e.id, calId, titulo: e.summary || '(sin título)', desc: limpiarHtml(e.description || ''),
     ini, fin, todoDia, color: e.colorId ? null : calInfo(calId).backgroundColor, link: e.htmlLink,
-    serie: e.recurringEventId || null, lugar: e.location || ''
+    serie: e.recurringEventId || null, lugar: e.location || '', ical: e.iCalUID || ''
   };
 }
 const limpiarHtml = s => s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
@@ -189,16 +231,48 @@ function limpiarCacheEventos() {
   const lim = ymd(sumar(lunes(new Date()), -21));
   Object.keys(localStorage).filter(k => k.startsWith('mt:ev:') && k.slice(6) < lim).forEach(k => localStorage.removeItem(k));
 }
+// Eventos de Google + mi rutina. Si la rutina también está en Google (mismo nombre y
+// hora parecida), se muestra una sola vez: la de Google.
+const cargandoSemana = fecha => !DEMO && S.auth === 'ok' && !S.ev[ymd(lunes(deYmd(fecha)))];
 function eventosDelDia(fecha) {
-  const lista = S.ev[ymd(lunes(deYmd(fecha)))];
-  if (!lista) return null;
+  const lista = S.ev[ymd(lunes(deYmd(fecha)))] || [];
   const d0 = deYmd(fecha), d1 = sumar(d0, 1);
-  return lista.filter(e => e.ini < d1 && e.fin > d0 && !(e.todoDia && e.fin <= d0));
+  const g = lista.filter(e => e.ini < d1 && e.fin > d0 && !(e.todoDia && e.fin <= d0));
+  if (cfg().verRutina === false) return g.sort((a, b) => a.ini - b.ini);
+  // La rutina de la app manda: la copia que esté en Google (exportada o importada
+  // del .ics) se oculta para no ver todo dos veces.
+  const norm = s => s.toLowerCase().trim(), r = rutinaDelDia(fecha);
+  const copia = e => e.ical?.startsWith('rut-') || r.some(x => norm(e.titulo).startsWith(norm(x.titulo).slice(0, 12)) && Math.abs(e.ini - x.ini) <= 90 * 60000);
+  return [...g.filter(e => e.todoDia || !copia(e)), ...r].sort((a, b) => a.ini - b.ini);
 }
-function buscarEvento(id) { for (const k in S.ev) { const e = (S.ev[k] || []).find(x => x.id === id); if (e) return e; } return null; }
+function buscarEvento(id) {
+  if (id.startsWith('r:')) { const [, f, rid] = id.split(':'); return rutinaDelDia(f).find(x => x.rid === rid) || null; }
+  for (const k in S.ev) { const e = (S.ev[k] || []).find(x => x.id === id); if (e) return e; }
+  return null;
+}
+
+function moverRutina(ev, ini, fin, todas) {
+  const r = rec('rut:' + ev.rid), f0 = ymd(ev.ini), f1 = ymd(ini), h = hm(ini), hf = hm(fin);
+  if (todas) {
+    const cambio = { h, f: hf };
+    if (r.fecha) cambio.fecha = f1;
+    else if (r.dias.length > 1) {
+      // la actividad se repite otros días: solo cambia este día de la semana
+      cambiar('rut:' + ev.rid, { dias: r.dias.filter(x => x !== ev.ini.getDay()) });
+      const { k, u, ...base } = r; poner('rut:' + uid(), { ...base, ...cambio, dias: [ini.getDay()] });
+      const o = rec(`rutx:${f0}:${ev.rid}`); if (o && !o.extra) borrar(`rutx:${f0}:${ev.rid}`);
+      return;
+    }
+    else if (f0 !== f1) cambio.dias = [ini.getDay()];
+    cambiar('rut:' + ev.rid, cambio);
+    const o = rec(`rutx:${f0}:${ev.rid}`); if (o && !o.extra) borrar(`rutx:${f0}:${ev.rid}`);
+  } else if (f0 === f1) cambiar(`rutx:${f0}:${ev.rid}`, { h, f: hf, oculto: 0 });
+  else { cambiar(`rutx:${f0}:${ev.rid}`, { oculto: 1 }); cambiar(`rutx:${f1}:${ev.rid}`, { extra: 1, oculto: 0, h, f: hf }); }
+}
 
 async function moverEvento(ev, ini, todaLaSerie) {
   const fin = new Date(ini.getTime() + (ev.fin - ev.ini));
+  if (ev.rutina) return moverRutina(ev, ini, fin, todaLaSerie);
   if (DEMO) {
     const mov = LS.get('demoMov', {}); mov[ev.id] = { ini: ini.toISOString(), fin: fin.toISOString() }; LS.set('demoMov', mov);
     S.ev = {}; return;
@@ -239,23 +313,9 @@ async function borrarEvento(ev) {
   S.evCarga = {}; S.ev = {};
 }
 
-/* Demo: la rutina base armada como si fuera el calendario */
+/* Demo: un par de eventos de ejemplo como si fueran de Google (la rutina sale de la app) */
 function semanaDemo(lu) {
   const mov = LS.get('demoMov', {}), borr = LS.get('demoBorr', []), out = [];
-  for (let i = 0; i < 7; i++) {
-    const f = ymd(sumar(lu, i));
-    RUTINA.delDia(deYmd(f)).forEach((it, j) => {
-      const id = `d${f}-${j}`;
-      let desc = it.detalle;
-      if (it.comida) {
-        desc = `HOY: ${it.plan}${it.detalle ? ': ' + it.detalle : ''}`;
-        const v = RUTINA.VAR[it.comida].filter(x => x.n !== it.plan);
-        if (v.length && it.plan !== 'Cena libre') desc += '\n\nVARIANTES: ' + v.map(x => x.n + (x.d ? ': ' + x.d : '')).join(' || ');
-      }
-      const titulo = it.comida === 'almuerzo' || it.comida === 'cena' ? (it.plan === 'Cena libre' ? 'Cena libre' : `${it.t}: ${it.plan}`) : it.t;
-      out.push({ id, calId: 'demo', titulo, desc, ini: conHora(f, it.h), fin: conHora(f, it.f), todoDia: false, color: null, link: '', serie: 'serie-' + j });
-    });
-  }
   const ej = ymd(sumar(lu, 1));
   out.push({ id: 'm1' + ej, calId: 'demo', titulo: 'Reunión con cliente (ejemplo)', desc: 'Evento de ejemplo del modo demo.', ini: conHora(ej, '10:00'), fin: conHora(ej, '11:00'), todoDia: false, link: '' });
   LS.get('demoNew', []).forEach(n => out.push({ ...n, calId: 'demo', ini: new Date(n.ini), fin: new Date(n.fin), todoDia: false, link: '' }));
@@ -269,7 +329,7 @@ const RE_COMIDA = /^\s*(desayuno|almuerzo|merienda|cena)/i;
 const nombreDe = (t, tipo) => {
   t = t.trim().replace(/\.$/, ''); const i = t.indexOf(':');
   if (i > 0 && i < 45) return t.slice(0, i);
-  const conocida = tipo && (RUTINA.VAR[tipo] || []).find(v => v.d && t.startsWith(v.d.slice(0, 30)));
+  const conocida = tipo && (plan().opciones[tipo] || []).find(v => v.d && t.startsWith(v.d.slice(0, 30)));
   if (conocida) return conocida.n;
   t = t.replace(/\s*\([^)]*\)/g, '').trim();
   return t.length > 70 ? t.slice(0, 68) + '…' : t;
@@ -277,29 +337,32 @@ const nombreDe = (t, tipo) => {
 const restoDe = t => { const i = t.indexOf(':'); return i > 0 && i < 45 ? t.slice(i + 1).trim() : ''; };
 
 function comidaDeEvento(e) {
+  if (e.rutina) {
+    const p = plan(), op = opcion(e.comida, e.plan);
+    return {
+      tipo: e.comida, hora: hm(e.ini), plan: e.plan, rid: e.rid, evId: e.id,
+      detalle: [op?.d, p.cantidades[e.comida]].filter(Boolean).join('\n\n'),
+      variantes: p.opciones[e.comida].filter(o => o.n !== e.plan)
+    };
+  }
+  const VAR = plan().opciones;
   const tipo = e.titulo.match(RE_COMIDA)[1].toLowerCase();
   const desc = e.desc || '';
   const hoy = (desc.match(/HOY:\s*([\s\S]*?)(?:\n\s*\n|$)/) || [])[1]?.trim() || '';
   const vars = (desc.match(/VARIANTES:\s*([\s\S]*?)(?:\n\s*\n|$)/) || [])[1] || '';
   const cant = (desc.match(/(Cantidades:[\s\S]*)$/) || [])[1] || '';
   const tras = e.titulo.split(':').slice(1).join(':').trim();
-  const enTexto = !tras && !hoy && (RUTINA.VAR[tipo] || []).find(v => desc.includes(v.n));
-  let plan = tras ? nombreDe(tras) : hoy ? nombreDe(hoy, tipo) : enTexto ? enTexto.n : e.titulo.replace(/\+.*$/, '').trim();
-  if (/cena libre/i.test(e.titulo)) plan = 'Cena libre';
+  const enTexto = !tras && !hoy && (VAR[tipo] || []).find(v => desc.includes(v.n));
+  let pl = tras ? nombreDe(tras) : hoy ? nombreDe(hoy, tipo) : enTexto ? enTexto.n : e.titulo.replace(/\+.*$/, '').trim();
+  if (/cena libre/i.test(e.titulo)) pl = 'Cena libre';
   const detalle = [hoy && restoDe(hoy), cant].filter(Boolean).join('\n') || (hoy ? '' : desc.split(/\n\s*\n/)[0]);
-  let variantes = vars ? vars.split('||').map(x => ({ n: nombreDe(x, tipo), d: restoDe(x) })).filter(x => x.n) : (RUTINA.VAR[tipo] || []).filter(x => x.n !== plan);
+  let variantes = vars ? vars.split('||').map(x => ({ n: nombreDe(x, tipo), d: restoDe(x) })).filter(x => x.n) : (VAR[tipo] || []).filter(x => x.n !== pl);
   const noLlegas = desc.match(/No llegás:\s*([^\n]+)/);
   if (noLlegas && !variantes.some(v => v.n === 'No llegás')) variantes = [...variantes, { n: 'No llegás', d: noLlegas[1] }];
-  return { tipo, hora: hm(e.ini), plan, detalle, variantes, evId: e.id };
+  return { tipo, hora: hm(e.ini), plan: pl, detalle, variantes, evId: e.id };
 }
 function comidasDelDia(fecha) {
-  const evs = eventosDelDia(fecha);
-  let lista = (evs || []).filter(e => RE_COMIDA.test(e.titulo)).map(comidaDeEvento);
-  if (!lista.length) {
-    lista = RUTINA.delDia(deYmd(fecha)).filter(x => x.comida).map(x => ({
-      tipo: x.comida, hora: x.h, plan: x.plan, detalle: x.detalle, variantes: RUTINA.VAR[x.comida].filter(v => v.n !== x.plan)
-    }));
-  }
+  const lista = eventosDelDia(fecha).filter(esComida).map(comidaDeEvento);
   const vistos = new Set();
   return lista.filter(c => !vistos.has(c.tipo) && vistos.add(c.tipo))
     .sort((a, b) => COMIDAS.findIndex(c => c[0] === a.tipo) - COMIDAS.findIndex(c => c[0] === b.tipo));
@@ -328,7 +391,7 @@ function racha(h) {
 /* ---------- Eventos: lo hice a horario / a otra hora / no ---------- */
 const claveAct = ev => `act:${ymd(ev.ini)}:${ev.id}`;
 const regAct = ev => rec(claveAct(ev));
-const seRegistra = ev => !ev.todoDia && !RE_COMIDA.test(ev.titulo);
+const seRegistra = ev => !ev.todoDia && !esComida(ev);
 function marcarAct(ev, estado, hora) {
   const k = claveAct(ev), ya = rec(k);
   if (ya && ya.estado === estado && estado !== 'otra') { borrar(k); return; }
@@ -411,8 +474,31 @@ function parsearIcs(texto) {
   }
   return eventos.filter(e => e.ini && e.titulo);
 }
-async function importarIcs(texto, calId, progreso) {
-  const evs = parsearIcs(texto); let ok = 0, mal = 0, error = '';
+// Mi rutina en el mismo formato que parsearIcs, para mandarla a Google Calendar
+// (así suenan los avisos del celu). Cada actividad queda como evento que se repite.
+function rutinaComoEventos() {
+  const BY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'], hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  const iso = (f, h) => conHora(f, h).toISOString();
+  return rutinas().filter(r => r.fecha ? r.fecha >= HOY() : r.dias?.length).map(r => {
+    let f = r.fecha;
+    if (!f) {
+      for (let i = 0; i < 21 && !f; i++) {
+        const d = ymd(sumar(hoy, i));
+        if (r.dias.includes(deYmd(d).getDay()) && (!r.quin || paridad(d) === r.quin)) f = d;
+      }
+    }
+    if (!f) return null;
+    const fin = r.f > r.h ? iso(f, r.f) : sumar(conHora(f, r.f), 1).toISOString();
+    const recurrence = r.fecha ? [] : [`RRULE:FREQ=WEEKLY;${r.quin ? 'INTERVAL=2;' : ''}BYDAY=${r.dias.map(d => BY[d]).join(',')}`];
+    const titulo = r.comida && r.plan && /almuerzo|cena/.test(r.comida) ? `${r.t}: ${r.plan}` : r.t;
+    const op = r.comida ? opcion(r.comida, r.plan) : null;
+    const desc = r.comida ? [`HOY: ${r.plan}${op?.d ? ': ' + op.d : ''}`, plan().opciones[r.comida].filter(o => o.n !== r.plan).length ? 'VARIANTES: ' + plan().opciones[r.comida].filter(o => o.n !== r.plan).map(o => o.n + (o.d ? ': ' + o.d : '')).join(' || ') : '', plan().cantidades[r.comida] || ''].filter(Boolean).join('\n\n') : r.detalle;
+    return { uid: `rut-${r.k.slice(4)}@mi-tracker`, titulo, desc, ini: { dateTime: iso(f, r.h), timeZone: TZ }, fin: { dateTime: fin, timeZone: TZ }, recurrence, avisos: [r.comida ? 10 : 30] };
+  }).filter(Boolean);
+}
+const importarIcs = (texto, calId, progreso) => importarEventos(parsearIcs(texto), calId, progreso);
+async function importarEventos(evs, calId, progreso) {
+  let ok = 0, mal = 0, error = '';
   for (const e of evs) {
     const cuerpo = {
       iCalUID: e.uid || uid() + '@mi-tracker', summary: e.titulo, description: e.desc || undefined,
@@ -433,10 +519,10 @@ const TABS = [['hoy', 'Hoy', 'M3 12l9-8 9 8M5 10v10h14V10'], ['agenda', 'Agenda'
 const icono = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
 
 function render() {
-  const v = { hoy: vHoy, agenda: vAgenda, habitos: vHabitos, comidas: vComidas, plata: vPlata, ajustes: vAjustes }[S.tab] || vHoy;
+  const v = { hoy: vHoy, agenda: vAgenda, habitos: vHabitos, comidas: vComidas, plata: vPlata, ajustes: vAjustes, rutina: vRutina, plan: vPlan }[S.tab] || vHoy;
   $('#vista').innerHTML = bannerAuth() + v();
-  $('#nav').innerHTML = TABS.map(([id, t, d]) => `<button class="${S.tab === id ? 'on' : ''}" data-a="tab" data-t="${id}">${icono(d)}<span>${t}</span></button>`).join('');
-  $('#titulo').textContent = { hoy: 'Hoy', agenda: 'Agenda', habitos: 'Hábitos', comidas: 'Comidas', plata: 'Plata', ajustes: 'Ajustes' }[S.tab];
+  $('#nav').innerHTML = TABS.map(([id, t, d]) => `<button class="${S.tab === id || (id === 'comidas' && S.tab === 'plan') || (id === 'agenda' && S.tab === 'rutina') ? 'on' : ''}" data-a="tab" data-t="${id}">${icono(d)}<span>${t}</span></button>`).join('');
+  $('#titulo').textContent = { hoy: 'Hoy', agenda: 'Agenda', habitos: 'Hábitos', comidas: 'Comidas', plata: 'Plata', ajustes: 'Ajustes', rutina: 'Mi rutina', plan: 'Mi plan' }[S.tab];
   $('#fab').hidden = !['hoy', 'plata', 'agenda'].includes(S.tab);
   pintarEstado();
 }
@@ -466,8 +552,10 @@ function vHoy() {
   const com = comidasDelDia(f);
   const comOk = com.filter(c => regComida(f, c.tipo)).length;
   const pasados = (evs || []).filter(e => seRegistra(e) && e.ini <= ahora && !regAct(e));
+  const sinDatos = !DEMO && !todos('rut:').length && !todos('plan:').length;
   return `
   <section class="hola"><h1>${saludo}</h1><p>${fechaLarga(f)}</p></section>
+  ${sinDatos ? `<div class="banner"><div><b>Cargá tu rutina, tu plan y tus medidas</b><br>Elegí el archivo <i>mi-tracker-datos.json</i> que te dejó Claude en Descargas. Es una sola vez: después viaja solo por tu Drive al celu.</div><button class="btn prim" data-a="restaurar">Cargar archivo</button></div>` : ''}
   <div class="rapidos">
     <button data-a="nuevoMov" data-t="gasto"><span>💸</span>Gasto</button>
     <button data-a="nuevoMov" data-t="ingreso"><span>💰</span>Ingreso</button>
@@ -476,7 +564,7 @@ function vHoy() {
   </div>
   <section class="card">
     <header><h2>Lo que sigue</h2><button class="link" data-a="tab" data-t="agenda">Agenda →</button></header>
-    ${evs === null ? '<p class="vacio">Cargando agenda…</p>' : prox.length ? prox.map((e, i) => filaEvento(e, i === 0)).join('') : '<p class="vacio">No queda nada en la agenda de hoy.</p>'}
+    ${prox.length ? prox.map((e, i) => filaEvento(e, i === 0)).join('') : (cargandoSemana(f) ? '<p class="vacio">Cargando agenda…</p>' : '<p class="vacio">No queda nada en la agenda de hoy.</p>')}
   </section>
   ${pasados.length ? `<section class="card">
     <header><h2>¿Cómo te fue?</h2><span class="cont">${pasados.length} sin marcar</span></header>
@@ -539,7 +627,7 @@ function vAgenda() {
   asegurarSemana(S.dia);
   const lu = lunes(deYmd(S.dia)), evs = eventosDelDia(S.dia), sem = S.ev[ymd(lu)];
   const tira = [...Array(7)].map((_, i) => {
-    const d = sumar(lu, i), f = ymd(d), n = (sem || []).filter(e => ymd(e.ini) === f).length;
+    const d = sumar(lu, i), f = ymd(d), n = eventosDelDia(f).length;
     return `<button class="${f === S.dia ? 'on' : ''} ${f === HOY() ? 'hoy' : ''}" data-a="dia" data-f="${f}"><small>${DC[d.getDay()]}</small><b>${d.getDate()}</b><i>${n ? '•' : ''}</i></button>`;
   }).join('');
   const ahora = new Date(); let marcado = false;
@@ -558,8 +646,9 @@ function vAgenda() {
   </div>
   <div class="tira">${tira}</div>
   ${S.dia !== HOY() ? `<button class="link centro" data-a="dia" data-f="${HOY()}">Volver a hoy</button>` : ''}
-  <section class="agenda">${evs === null ? '<p class="vacio">Cargando…</p>' : filas || '<p class="vacio">Día libre. Tocá + para agendar algo.</p>'}</section>
-  ${!DEMO && S.auth === 'ok' ? `<p class="nota">Mostrando: ${calsVisibles().map(id => esc(calInfo(id).summary)).join(', ')} · <button class="link" data-a="calendarios">cambiar</button></p>` : ''}`;
+  <section class="agenda">${cargandoSemana(S.dia) ? '<p class="nota">Trayendo tu agenda de Google…</p>' : ''}${filas || '<p class="vacio">Día libre. Tocá + para agendar algo.</p>'}</section>
+  <p class="nota"><span class="punto" style="background:#0d9488"></span> Mi rutina · <button class="link" data-a="tab" data-t="rutina">editar</button>
+  ${!DEMO && S.auth === 'ok' ? `<br>Google: ${calsVisibles().map(id => esc(calInfo(id).summary)).join(', ')} · <button class="link" data-a="calendarios">cambiar</button>` : ''}</p>`;
 }
 
 /* --- Hábitos + pantalla --- */
@@ -639,13 +728,14 @@ function vComidas() {
   <div class="semana-nav">
     <button class="icon" data-a="diaMas" data-n="-1">‹</button><b>${f === HOY() ? 'Hoy, ' : ''}${fechaLarga(f)}</b><button class="icon" data-a="diaMas" data-n="1">›</button>
   </div>
-  <section class="card">${com.map(x => filaComida(f, x)).join('')}</section>
-  <details class="card plegable" ${Object.keys(c.metas).length || Object.keys(it).length ? 'open' : ''}>
+  <div class="atajos"><button data-a="tab" data-t="plan">🥗 Mi plan y opciones</button><button data-a="tab" data-t="rutina">🗓️ Mi rutina</button></div>
+  <section class="card">${com.map(x => filaComida(f, x)).join('') || '<p class="vacio">No hay comidas en la rutina de este día. Agregalas en Mi rutina.</p>'}</section>
+  <details class="card plegable" ${Object.keys(metas()).length || Object.keys(it).length ? 'open' : ''}>
     <summary><h2>Porciones del día</h2><small>Opcional</small></summary>
     <p class="nota">La nutri te dio una cantidad de porciones por grupo para cumplir en el día ("intercambios"). Por ejemplo, 1 huevo = 1 porción de carnes; un scoop o una milanesa = 3. Si querés controlarlo, sumá acá lo que vas comiendo. Si con marcar las comidas te alcanza, ignorá esta parte.</p>
     <button class="link" data-a="metas">Cargar cuántas porciones te tocan por día</button>
     <div class="inter">${GRUPOS.map(([g, n]) => {
-      const v = it[g] || 0, m = c.metas[g];
+      const v = it[g] || 0, m = metas()[g];
       return `<div class="${m && v >= m ? 'listo' : ''}"><span>${n}</span><div><button data-a="inter" data-g="${g}" data-n="-1">−</button><b>${v}${m ? `<small>/${m}</small>` : ''}</b><button data-a="inter" data-g="${g}" data-n="1">+</button></div></div>`;
     }).join('')}</div>
   </details>
@@ -656,9 +746,24 @@ function vComidas() {
     <div class="fila-b"><button class="btn prim" data-a="compartirNutri">Compartir</button><button class="btn" data-a="imprimirNutri">Imprimir / PDF</button></div>
   </section>
   <section class="card">
-    <header><h2>Medidas</h2><button class="link" data-a="nuevaMedida">+ Cargar</button></header>
+    <header><h2>Tu cuerpo</h2><button class="link" data-a="nuevaMedida">+ Cargar medición</button></header>
+    ${vObjetivo()}
     ${tablaMedidas()}
   </section>`;
+}
+function vObjetivo() {
+  const o = rec('obj:main'), m = todos('med:').sort((a, b) => a.k < b.k ? -1 : 1);
+  if (!o && !m.length) return '';
+  const pri = m[0], ult = m[m.length - 1], num = v => decimal(v);
+  const dif = (k, u) => pri && ult && pri !== ult && num(pri[k]) != null && num(ult[k]) != null ? ` <small class="${num(ult[k]) - num(pri[k]) <= 0 ? 'verde' : 'rojo'}">${num(ult[k]) - num(pri[k]) > 0 ? '+' : '−'}${fmt(Math.abs(num(ult[k]) - num(pri[k])))} ${u}</small>` : '';
+  const falta = o?.pesoObj && ult?.peso ? num(ult.peso) - num(o.pesoObj) : null;
+  return `<div class="cuerpo">
+    ${ult ? `<div><small>Peso</small><b>${fmt(num(ult.peso))} kg${dif('peso', 'kg')}</b></div>
+    <div><small>% grasa</small><b>${ult.grasa != null ? fmt(num(ult.grasa)) + '%' : '–'}${dif('grasa', '%')}</b></div>
+    <div><small>Músculo</small><b>${ult.musculo != null ? fmt(num(ult.musculo)) + ' kg' : '–'}${dif('musculo', 'kg')}</b></div>` : ''}
+    ${o?.pesoObj ? `<div><small>Objetivo</small><b>${fmt(num(o.pesoObj))} kg</b>${falta != null ? `<small>${falta > 0 ? `faltan ${fmt(falta)} kg` : '¡llegaste!'}</small>` : ''}</div>` : ''}
+  </div>
+  ${o?.nota || o?.kcal ? `<p class="nota">${o.kcal ? `Plan de ${fmt(o.kcal)} kcal por día${o.gasto ? ` (gastás unas ${fmt(o.gasto)})` : ''}. ` : ''}${esc(o.nota || '')}</p>` : ''}`;
 }
 function diasRango() {
   const hoy = new Date(); let ini, fin;
@@ -671,10 +776,10 @@ function diasRango() {
 function datosNutri() {
   const dias = diasRango(); let ok = 0, cambio = 0, no = 0, sin = 0;
   const detalle = dias.map(f => {
-    const plan = comidasPlaneadas(f);
-    const tipos = new Set([...plan.map(c => c.tipo), ...COMIDAS.map(c => c[0]).filter(t => regComida(f, t))]);
+    const pl = comidasPlaneadas(f);
+    const tipos = new Set([...pl.map(c => c.tipo), ...COMIDAS.map(c => c[0]).filter(t => regComida(f, t))]);
     const filas = COMIDAS.filter(c => tipos.has(c[0])).map(([t, n]) => {
-      const r = regComida(f, t), p = plan.find(x => x.tipo === t);
+      const r = regComida(f, t), p = pl.find(x => x.tipo === t);
       if (!r) sin++; else if (r.estado === 'ok') ok++; else if (r.estado === 'cambio') cambio++; else no++;
       return { n, plan: r?.plan || p?.plan || '', r };
     });
@@ -683,11 +788,7 @@ function datosNutri() {
   const total = ok + cambio + no;
   return { dias, detalle, ok, cambio, no, sin, total };
 }
-function comidasPlaneadas(f) {
-  const evs = eventosDelDia(f);
-  if (evs && evs.some(e => RE_COMIDA.test(e.titulo))) return comidasDelDia(f);
-  return RUTINA.delDia(deYmd(f)).filter(x => x.comida).map(x => ({ tipo: x.comida, plan: x.plan }));
-}
+const comidasPlaneadas = f => comidasDelDia(f);
 function resumenNutri() {
   const d = datosNutri();
   if (!d.total) return '<p class="vacio">Todavía no marcaste comidas en este período.</p>';
@@ -712,17 +813,69 @@ function textoNutri() {
       else if (y.r.estado === 'no') l.push(`  ${y.n}: ✗ no la hice${y.r.nota ? ' (' + y.r.nota + ')' : ''}`);
       else l.push(`  ${y.n}: ↺ ${y.r.variante || ''}${y.r.nota ? (y.r.variante ? ' · ' : '') + y.r.nota : ''} (plan: ${y.plan})`);
     });
-    if (x.int) l.push('  Porciones (intercambios): ' + GRUPOS.filter(([g]) => x.int[g]).map(([g, n]) => `${n} ${x.int[g]}${c.metas[g] ? '/' + c.metas[g] : ''}`).join(', '));
+    if (x.int) l.push('  Porciones (intercambios): ' + GRUPOS.filter(([g]) => x.int[g]).map(([g, n]) => `${n} ${x.int[g]}${metas()[g] ? "/" + metas()[g] : ''}`).join(', '));
     l.push('');
   });
   const med = todos('med:').sort((a, b) => a.k < b.k ? 1 : -1).slice(0, 3);
-  if (med.length) { l.push('Medidas:'); med.forEach(m => l.push(`  ${fechaCorta(m.k.slice(4))}: ${[m.peso && m.peso + ' kg', m.grasa && m.grasa + '% grasa', m.musculo && m.musculo + ' kg músculo', m.cintura && m.cintura + ' cm cintura'].filter(Boolean).join(' · ')}`)); }
+  if (med.length) { l.push('Medidas:'); const v = x => fmt(decimal(x)); med.forEach(m => l.push(`  ${fechaCorta(m.k.slice(4))}: ${[m.peso != null && v(m.peso) + ' kg', m.grasa != null && v(m.grasa) + '% grasa', m.musculo != null && v(m.musculo) + ' kg músculo', m.cintura != null && v(m.cintura) + ' cm cintura', m.pliegues != null && v(m.pliegues) + ' mm (6 pliegues)'].filter(Boolean).join(' · ')}`)); }
   return l.join('\n');
 }
 function tablaMedidas() {
   const m = todos('med:').sort((a, b) => a.k < b.k ? 1 : -1);
   if (!m.length) return '<p class="vacio">Cargá peso, % de grasa o cintura cuando te midas. Sirve para ver la evolución con la nutri.</p>';
-  return `<table class="tabla"><tr><th>Fecha</th><th>Peso</th><th>% grasa</th><th>Músculo</th><th>Cintura</th></tr>${m.slice(0, 8).map(x => `<tr data-a="nuevaMedida" data-f="${x.k.slice(4)}"><td>${fechaCorta(x.k.slice(4))}</td><td>${x.peso || '–'}</td><td>${x.grasa || '–'}</td><td>${x.musculo || '–'}</td><td>${x.cintura || '–'}</td></tr>`).join('')}</table>`;
+  const v = x => x == null || x === '' ? '–' : fmt(decimal(x));
+  const conDetalle = m.find(x => x.detalle);
+  return `<table class="tabla"><tr><th>Fecha</th><th>Peso</th><th>% grasa</th><th>Músculo</th><th>Cintura</th><th>Σ pliegues</th></tr>${m.slice(0, 8).map(x => `<tr data-a="nuevaMedida" data-f="${x.k.slice(4)}"><td>${fechaCorta(x.k.slice(4))}</td><td>${v(x.peso)}</td><td>${v(x.grasa)}</td><td>${v(x.musculo)}</td><td>${v(x.cintura)}</td><td>${v(x.pliegues)}</td></tr>`).join('')}</table>
+  ${conDetalle ? `<details class="ayuda"><summary>Ver el informe completo del ${fechaCorta(conDetalle.k.slice(4))}${conDetalle.nota ? ' · ' + esc(conDetalle.nota) : ''}</summary>
+    ${Object.entries(conDetalle.detalle).map(([grupo, vals]) => `<h4 class="det-t">${esc(grupo)}</h4><div class="det">${Object.entries(vals).map(([k, x]) => `<span>${esc(k)}</span><b>${esc(typeof x === 'number' ? fmt(x) : x)}</b>`).join('')}</div>`).join('')}</details>` : ''}`;
+}
+
+/* --- Mi rutina --- */
+const ORDEN_DIAS = [1, 2, 3, 4, 5, 6, 0];
+function frecuenciaTxt(r) {
+  if (r.fecha) return 'solo el ' + fechaCorta(r.fecha);
+  if (!r.quin) return '';
+  const lu = lunes(new Date()), esta = paridad(ymd(lu)) === r.quin;
+  return esta ? 'semana por medio (esta sí)' : 'semana por medio (la próxima)';
+}
+function vRutina() {
+  const rs = rutinas();
+  const porDia = d => rs.filter(r => !r.fecha && r.dias?.includes(d));
+  const filaR = r => `<button class="rut-it" data-a="editarRut" data-id="${r.k.slice(4)}">
+    <span class="h">${r.h}<br><small>${r.f}</small></span>
+    <span class="t"><b>${r.comida ? COMIDAS.find(c => c[0] === r.comida)[2] + ' ' : ''}${esc(r.t)}</b>${r.comida && r.plan ? `<small>${esc(r.plan)}</small>` : r.detalle ? `<small>${esc(r.detalle.slice(0, 70))}</small>` : ''}${frecuenciaTxt(r) ? `<em class="act otra">${frecuenciaTxt(r)}</em>` : ''}</span></button>`;
+  const sueltos = rs.filter(r => r.fecha && r.fecha >= HOY());
+  return `
+  <p class="nota">Tu semana tipo. Lo que cambies acá vale para todas las semanas; para cambiar un solo día, tocá el evento en la Agenda.</p>
+  ${ORDEN_DIAS.map(d => `<section class="card">
+    <header><h2>${DIAS[d].replace(/^./, x => x.toUpperCase())}</h2><button class="link" data-a="editarRut" data-dia="${d}">+ Agregar</button></header>
+    ${porDia(d).map(filaR).join('') || '<p class="vacio">Nada todavía.</p>'}
+  </section>`).join('')}
+  ${sueltos.length ? `<section class="card"><header><h2>Solo una vez</h2></header>${sueltos.map(filaR).join('')}</section>` : ''}
+  <section class="card">
+    <header><h2>Avisos en el celu</h2></header>
+    <p class="nota">Si querés que el celu te avise antes de cada cosa, pasá la rutina a tu Google Calendar. Si la cambiás, volvé a tocar el botón y se actualiza.</p>
+    <button class="btn" data-a="exportarRutina" ${DEMO || S.auth !== 'ok' ? 'disabled' : ''}>Pasar mi rutina a Google Calendar</button>
+  </section>`;
+}
+
+/* --- Mi plan de comidas --- */
+function vPlan() {
+  const p = plan(), o = rec('obj:main');
+  const usos = n => rutinas().filter(r => r.plan === n).map(r => r.dias ? r.dias.map(d => DC[d]).join(' ') : '').join(' · ');
+  return `
+  <section class="card">
+    <header><h2>${esc(p.nombre || 'Mi plan')}</h2>${p.desde ? `<span class="cont">desde ${fechaCorta(p.desde)}</span>` : ''}</header>
+    ${o?.kcal ? `<p class="nota">${fmt(o.kcal)} kcal por día${p.profesional ? ' · ' + esc(p.profesional) : ''}.</p>` : ''}
+    ${p.notas ? `<div class="desc">${esc(p.notas)}</div>` : ''}
+    <div class="fila-b"><button class="btn prim" data-a="cargarPlan">Cargar plan nuevo</button><button class="btn" data-a="metas">Porciones por día</button></div>
+    <p class="nota">¿La nutri te cambió el plan? Pasale el PDF a Claude y te arma el archivo. Al cargarlo, las comidas de tu rutina se reacomodan solas con las opciones nuevas.</p>
+  </section>
+  ${COMIDAS.map(([t, n, e]) => `<section class="card">
+    <header><h2>${e} ${n}</h2><button class="link" data-a="editarOpcion" data-tipo="${t}">+ Opción</button></header>
+    ${p.opciones[t].map((op, i) => `<button class="op" data-a="editarOpcion" data-tipo="${t}" data-i="${i}"><b>${esc(op.n)}</b>${op.d ? `<small>${esc(op.d)}</small>` : ''}${usos(op.n) ? `<em class="act ok">${usos(op.n)}</em>` : ''}</button>`).join('') || '<p class="vacio">Sin opciones cargadas.</p>'}
+    ${t === 'almuerzo' || t === 'cena' ? `<label class="campo"><span>Cantidades</span><textarea class="in" rows="3" data-cant="${t}" placeholder="Ej: 1 mano de carne + 2/3 taza de arroz…">${esc(p.cantidades[t] || '')}</textarea></label>` : ''}
+  </section>`).join('')}`;
 }
 
 /* --- Plata --- */
@@ -772,11 +925,11 @@ function vAjustes() {
       : `<button class="btn prim" data-a="conectar" data-p="1">Entrar con Google</button>`}
   </section>
   <section class="card">
-    <header><h2>Cargar la rutina en el calendario</h2></header>
-    <p class="nota">Tu rutina semanal v17 ya viene adentro de la app: tocá el botón, elegí el calendario y listo. Para una versión nueva, elegí el archivo .ics.</p>
-    ${S.auth !== 'ok' && !DEMO ? '<p class="nota">Primero entrá con Google.</p>' : ''}
-    <div class="fila-b"><button class="btn prim" data-a="importarIncluida" ${DEMO || S.auth !== 'ok' ? 'disabled' : ''}>Cargar mi rutina v17</button>
-    <button class="btn" data-a="importar" ${DEMO || S.auth !== 'ok' ? 'disabled' : ''}>Elegir otro archivo .ics</button></div>
+    <header><h2>Rutina y plan</h2></header>
+    <div class="fila-b"><button class="btn" data-a="tab" data-t="rutina">🗓️ Mi rutina</button><button class="btn" data-a="tab" data-t="plan">🥗 Mi plan</button></div>
+    <label class="campo chk"><input type="checkbox" data-a="verRutina" ${c.verRutina === false ? '' : 'checked'}> Mostrar mi rutina en la agenda</label>
+    <p class="nota">¿Tenés un .ics de otra persona o una versión vieja? Lo podés cargar directo a Google Calendar.</p>
+    <button class="btn" data-a="importar" ${DEMO || S.auth !== 'ok' ? 'disabled' : ''}>Cargar un archivo .ics a Google</button>
   </section>
   <section class="card">
     <header><h2>Plata</h2></header>
@@ -785,8 +938,9 @@ function vAjustes() {
     <button class="btn prim" data-a="guardarAjustes">Guardar</button>
   </section>
   <section class="card">
-    <header><h2>Copia de seguridad</h2></header>
-    <div class="fila-b"><button class="btn" data-a="exportar">Descargar copia (.json)</button><button class="btn" data-a="restaurar">Cargar copia</button></div>
+    <header><h2>Datos</h2></header>
+    <p class="nota">"Cargar archivo" sirve para el archivo de datos que te armó Claude (rutina, plan y medidas) o para una copia que descargaste antes. Suma lo que trae sin borrar lo tuyo.</p>
+    <div class="fila-b"><button class="btn" data-a="exportar">Descargar copia (.json)</button><button class="btn" data-a="restaurar">Cargar archivo</button></div>
   </section>`;
 }
 
@@ -826,12 +980,14 @@ function hojaMov(tipo, id) {
     o => setTimeout(() => $('#mv-monto', o)?.focus(), 250));
 }
 function hojaEvento(ev, abrirOtra) {
-  const c = ev.titulo.match(RE_COMIDA) ? comidaDeEvento(ev) : null;
+  const c = esComida(ev) ? comidaDeEvento(ev) : null;
   const f = ymd(ev.ini), r = c ? regComida(f, c.tipo) : null;
   const ra = seRegistra(ev) ? regAct(ev) : null, yaEmpezo = ev.ini <= new Date();
+  const fuente = ev.rutina ? 'Mi rutina' + (ev.cambiado ? ' (cambiado este día)' : '') : !DEMO ? calInfo(ev.calId).summary : '';
   hoja(`
     <h3 class="h-t" style="--c:${ev.color || '#6366f1'}">${esc(ev.titulo)}</h3>
-    <p class="h-s">${fechaCorta(f)} · ${ev.todoDia ? 'Todo el día' : `${hm(ev.ini)} a ${hm(ev.fin)}`}${!DEMO ? ' · ' + esc(calInfo(ev.calId).summary) : ''}</p>
+    <p class="h-s">${fechaCorta(f)} · ${ev.todoDia ? 'Todo el día' : `${hm(ev.ini)} a ${hm(ev.fin)}`}${fuente ? ' · ' + esc(fuente) : ''}</p>
+    ${ev.rutina && c && c.variantes.length ? `<h4>Para comer este día</h4><div class="cats">${[{ n: c.plan }, ...c.variantes].filter(o => o.n).map(o => `<button class="${o.n === c.plan ? 'on' : ''}" data-a="planDia" data-v="${esc(o.n)}">${esc(o.n)}</button>`).join('')}</div>` : ''}
     ${c ? `<div class="com-b grande">
       <button class="${r?.estado === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${c.tipo}">✓ La hice</button>
       <button class="${r?.estado === 'cambio' ? 'on' : ''}" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}" data-cambio="1">↺ Cambié</button>
@@ -845,16 +1001,17 @@ function hojaEvento(ev, abrirOtra) {
       <span class="nota">¿A qué hora fuiste?</span><input id="ot-h" class="in" type="time" value="${ra?.hora || hm(ev.ini)}">
       <button class="btn prim" data-a="guardarOtra" data-id="${esc(ev.id)}">Guardar</button></div>` : ''}
     ${ev.desc ? `<div class="desc">${esc(ev.desc)}</div>` : ''}
-    ${ev.todoDia || !calEscribible(ev.calId) ? '' : `
+    ${ev.todoDia || !(ev.rutina || calEscribible(ev.calId)) ? '' : `
     <h4>Mover</h4>
     <div class="cats">${[[-15, '−15 min'], [15, '+15 min'], [30, '+30 min'], [60, '+1 h'], [1440, 'Mañana']].map(([n, t]) => `<button data-a="correr" data-n="${n}">${t}</button>`).join('')}</div>
     <div class="fila-b"><input id="mo-f" class="in" type="date" value="${f}"><input id="mo-h" class="in" type="time" value="${hm(ev.ini)}"></div>
-    ${ev.serie ? `<div class="seg"><button class="on" data-a="alcance" data-v="uno">Solo este día</button><button data-a="alcance" data-v="serie">Todas las semanas</button></div>` : ''}
-    <div class="fila-b"><button class="btn peligro" data-a="borrarEvento">Borrar</button>${ev.link ? `<a class="btn" href="${esc(ev.link)}" target="_blank" rel="noopener">Abrir en Google</a>` : ''}<button class="btn prim grande" data-a="guardarMover">Mover</button></div>`}`);
+    ${ev.serie ? `<div class="seg"><button class="on" data-a="alcance" data-v="uno">Solo este día</button><button data-a="alcance" data-v="serie">${ev.rutina ? `Todos los ${DIAS[ev.ini.getDay()].replace(/([^s])$/, "$1s")}` : 'Todas las semanas'}</button></div>` : ''}
+    <div class="fila-b">${ev.rutina ? `<button class="btn peligro" data-a="ocultarRutDia">Hoy no va</button><button class="btn" data-a="editarRut" data-id="${ev.rid}">✎ Editar</button>` : `<button class="btn peligro" data-a="borrarEvento">Borrar</button>`}${ev.link ? `<a class="btn" href="${esc(ev.link)}" target="_blank" rel="noopener">Abrir en Google</a>` : ''}<button class="btn prim grande" data-a="guardarMover">Mover</button></div>
+    ${ev.rutina && ev.cambiado ? '<button class="link" data-a="restaurarRutDia">Volver a como estaba en la rutina</button>' : ''}`}`);
   $('#hoja').dataset.ev = ev.id; $('#hoja').dataset.alc = 'uno';
 }
 function hojaComida(f, tipo, abrirCambio) {
-  const c = comidasDelDia(f).find(x => x.tipo === tipo) || { tipo, plan: '', variantes: RUTINA.VAR[tipo] || [], hora: '' };
+  const c = comidasDelDia(f).find(x => x.tipo === tipo) || { tipo, plan: '', variantes: plan().opciones[tipo] || [], hora: '' };
   const r = regComida(f, tipo), info = COMIDAS.find(x => x[0] === tipo);
   hoja(`
     <h3>${info[2]} ${info[1]} · ${fechaCorta(f)}</h3>
@@ -910,13 +1067,64 @@ function hojaHabito(id) {
     o => !h && setTimeout(() => $('#hb-n', o)?.focus(), 250));
   $('#hoja').dataset.tipo = h?.tipo || 'hacer';
 }
+const CAMPOS_MED = [['peso', 'Peso (kg)'], ['grasa', '% de grasa'], ['musculo', 'Masa muscular (kg)'], ['cintura', 'Cintura (cm)'], ['pliegues', 'Suma 6 pliegues (mm)'], ['grasaKg', 'Masa adiposa (kg)']];
 function hojaMedida(f) {
   f = f || HOY(); const m = rec('med:' + f) || {};
   hoja(`
-    <h3>Medidas</h3>
+    <h3>Medición</h3>
     <label class="campo"><span>Fecha</span><input id="md-f" class="in" type="date" value="${f}"></label>
-    <div class="grilla2">${[['peso', 'Peso (kg)'], ['grasa', '% de grasa'], ['musculo', 'Masa muscular (kg)'], ['cintura', 'Cintura (cm)']].map(([k, t]) => `<label class="campo"><span>${t}</span><input id="md-${k}" class="in" type="text" inputmode="decimal" value="${esc(m[k] || '')}"></label>`).join('')}</div>
+    <div class="grilla2">${CAMPOS_MED.map(([k, t]) => `<label class="campo"><span>${t}</span><input id="md-${k}" class="in" type="text" inputmode="decimal" value="${m[k] == null ? '' : esc(fmt(decimal(m[k])))}"></label>`).join('')}</div>
+    <p class="nota">Cargá lo que tengas: con el peso de la balanza alcanza. Los pliegues y el % de grasa salen del informe de la nutri.</p>
     <button class="btn prim ancho" data-a="guardarMedida">Guardar</button>`);
+}
+function hojaRut(id, dia) {
+  const r = id ? rec('rut:' + id) : null, p = plan();
+  const dias = new Set(r?.dias || (dia != null ? [+dia] : []));
+  const lu = ymd(lunes(new Date())), estaSem = paridad(lu);
+  const frec = r?.fecha ? 'una' : !r?.quin ? 'todas' : r.quin === estaSem ? 'esta' : 'proxima';
+  hoja(`
+    <h3>${r ? 'Editar actividad' : 'Nueva actividad'}</h3>
+    <input id="ru-t" class="in" placeholder="Ej: Gym, Leer, Almuerzo" value="${esc(r?.t || '')}">
+    <div class="fila-b"><label class="campo"><span>Desde</span><input id="ru-h" class="in" type="time" value="${r?.h || '09:00'}"></label><label class="campo"><span>Hasta</span><input id="ru-f" class="in" type="time" value="${r?.f || '10:00'}"></label></div>
+    <h4>Días</h4>
+    <div class="cats" id="ru-dias">${ORDEN_DIAS.map(d => `<button class="${dias.has(d) ? 'on' : ''}" data-a="ruDia" data-d="${d}">${DC[d]}</button>`).join('')}</div>
+    <div class="seg" id="ru-frec">${[['todas', 'Todas las semanas'], ['esta', 'Semana por medio (esta)'], ['proxima', 'Semana por medio (próxima)']].map(([k, t]) => `<button class="${frec === k ? 'on' : ''}" data-a="ruFrec" data-v="${k}">${t}</button>`).join('')}</div>
+    ${r?.fecha ? `<p class="nota">Esta actividad es de un solo día (${fechaCorta(r.fecha)}). Si elegís días, pasa a repetirse.</p>` : ''}
+    <label class="campo"><span>¿Es una comida?</span><select id="ru-c" class="in" data-a2="ruComida"><option value="">No</option>${COMIDAS.map(([t, n]) => `<option value="${t}" ${r?.comida === t ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    <label class="campo" id="ru-pl-c" ${r?.comida ? '' : 'hidden'}><span>Qué comer (del plan)</span><select id="ru-pl" class="in">${r?.comida ? p.opciones[r.comida].map(o => `<option ${o.n === r.plan ? 'selected' : ''}>${esc(o.n)}</option>`).join('') : ''}</select></label>
+    <textarea id="ru-d" class="in" rows="3" placeholder="Notas (opcional): ej. salí 17:00 en punto, mochila lista">${esc(r?.detalle || '')}</textarea>
+    <div class="fila-b">${r ? `<button class="btn peligro" data-a="borrarRut" data-id="${id}">Borrar</button>` : ''}<button class="btn prim grande" data-a="guardarRut" data-id="${id || ''}">Guardar</button></div>`,
+    o => !r && setTimeout(() => $('#ru-t', o)?.focus(), 250));
+  $('#hoja').dataset.frec = frec;
+}
+function hojaOpcion(tipo, i) {
+  const op = i != null ? plan().opciones[tipo][+i] : null, info = COMIDAS.find(c => c[0] === tipo);
+  hoja(`
+    <h3>${info[2]} ${op ? 'Editar opción' : 'Nueva opción'} de ${info[1].toLowerCase()}</h3>
+    <input id="op-n" class="in" placeholder="Nombre corto. Ej: Tostada con huevos" value="${esc(op?.n || '')}">
+    <textarea id="op-d" class="in" rows="4" placeholder="Qué lleva y cuánto. Ej: 1 tostada integral + 2 huevos + café con leche">${esc(op?.d || '')}</textarea>
+    <div class="fila-b">${op ? `<button class="btn peligro" data-a="borrarOpcion" data-tipo="${tipo}" data-i="${i}">Borrar</button>` : ''}<button class="btn prim grande" data-a="guardarOpcion" data-tipo="${tipo}" data-i="${i ?? ''}">Guardar</button></div>`,
+    o => !op && setTimeout(() => $('#op-n', o)?.focus(), 250));
+}
+// Plan nuevo: reemplaza las opciones y reacomoda las comidas de la rutina que
+// apuntaban a opciones que ya no existen (las reparte en orden entre las nuevas).
+function aplicarPlan(nuevo) {
+  const ops = nuevo.opciones || {};
+  if (!COMIDAS.some(([t]) => ops[t]?.length)) throw new Error('El archivo no trae opciones de comidas.');
+  const ant = plan();
+  cambiar('plan:main', {
+    nombre: nuevo.nombre || 'Plan nuevo', desde: nuevo.desde || HOY(), profesional: nuevo.profesional || ant.profesional || '',
+    notas: nuevo.notas || '', opciones: { ...PLAN_VACIO.opciones, ...ops }, cantidades: nuevo.cantidades || {}, metas: nuevo.metas || ant.metas || {}
+  });
+  if (nuevo.kcal) cambiar('obj:main', { kcal: nuevo.kcal });
+  let cambios = 0; const giro = {};
+  rutinas().filter(r => r.comida).forEach(r => {
+    const lista = (ops[r.comida] || []).filter(o => !/libre/i.test(o.n));
+    if (!lista.length || lista.some(o => o.n === r.plan) || /libre/i.test(r.plan || '')) return;
+    giro[r.comida] = (giro[r.comida] || 0);
+    cambiar(r.k, { plan: lista[giro[r.comida]++ % lista.length].n }); cambios++;
+  });
+  return cambios;
 }
 function hojaImportar(texto, nombre) {
   const n = parsearIcs(texto).length;
@@ -940,7 +1148,7 @@ function hojaImportar(texto, nombre) {
 function hojaMetas() {
   const c = cfg();
   hoja(`<h3>Porciones por día</h3><p class="nota">Copiá los números del primer cuadro del plan de la nutri (ej: Almidones 6). Dejá vacío lo que no quieras seguir.</p>
-    <div class="grilla2">${GRUPOS.map(([g, n]) => `<label class="campo"><span>${n}</span><input id="mt-${g}" class="in" type="number" inputmode="numeric" min="0" value="${c.metas[g] || ''}"></label>`).join('')}</div>
+    <div class="grilla2">${GRUPOS.map(([g, n]) => `<label class="campo"><span>${n}</span><input id="mt-${g}" class="in" type="number" inputmode="numeric" min="0" value="${metas()[g] || ''}"></label>`).join('')}</div>
     <button class="btn prim ancho" data-a="guardarMetas">Guardar</button>`);
 }
 function abrirCalendarios(primera) {
@@ -1012,7 +1220,7 @@ const A = {
     g[b.dataset.g] = Math.max(0, (g[b.dataset.g] || 0) + +b.dataset.n); poner(k, { g }); render();
   },
   metas: hojaMetas,
-  guardarMetas() { const m = {}; GRUPOS.forEach(([g]) => { const v = +$('#mt-' + g).value; if (v) m[g] = v; }); setCfg({ metas: m }); cerrar(); render(); },
+  guardarMetas() { const m = {}; GRUPOS.forEach(([g]) => { const v = +$('#mt-' + g).value; if (v) m[g] = v; }); cambiar('plan:main', { ...plan(), metas: m }); cerrar(); render(); },
   async compartirNutri() {
     const t = textoNutri();
     if (navigator.share) { try { await navigator.share({ title: 'Registro de comidas', text: t }); return; } catch (e) { if (e.name === 'AbortError') return; } }
@@ -1026,9 +1234,9 @@ const A = {
   nuevaMedida(b) { hojaMedida(b.dataset.f); },
   guardarMedida() {
     const f = $('#md-f').value || HOY(), d = {};
-    ['peso', 'grasa', 'musculo', 'cintura'].forEach(k => { const v = $('#md-' + k).value.trim(); if (v) d[k] = v; });
+    CAMPOS_MED.forEach(([k]) => { const v = decimal($('#md-' + k).value); if (v != null) d[k] = v; });
     if (!Object.keys(d).length) return aviso('Cargá al menos un dato.');
-    poner('med:' + f, d); cerrar(); render();
+    const ya = rec('med:' + f); poner('med:' + f, { ...(ya || {}), ...d }); cerrar(); render();
   },
 
   nuevoMov(b) { hojaMov(b.dataset.t, b.dataset.id); },
@@ -1075,7 +1283,7 @@ const A = {
     const e = buscarEvento($('#hoja').dataset.ev), nuevo = new Date(`${$('#mo-f').value}T${$('#mo-h').value}`);
     if (isNaN(nuevo)) return aviso('Fecha u hora inválida.');
     const serie = $('#hoja').dataset.alc === 'serie';
-    if (serie && ymd(nuevo) !== ymd(e.ini)) return aviso('Para todas las semanas solo se puede cambiar la hora, no el día.');
+    if (serie && !e.rutina && ymd(nuevo) !== ymd(e.ini)) return aviso('Para todas las semanas solo se puede cambiar la hora, no el día.');
     b.disabled = true; b.textContent = 'Moviendo…';
     try { await moverEvento(e, nuevo, serie); cerrar(); aviso(serie ? 'Movido en todas las semanas' : 'Movido'); S.dia = ymd(nuevo); await asegurarSemana(S.dia, true); render(); }
     catch (err) { b.disabled = false; b.textContent = 'Mover'; aviso('No se pudo mover: ' + err.message); }
@@ -1122,9 +1330,79 @@ const A = {
     inp.onchange = async () => { const file = inp.files[0]; if (file) hojaImportar(await file.text(), file.name); };
     inp.click();
   },
-  async importarIncluida() {
-    try { hojaImportar(await (await fetch('rutina.ics?v=17')).text(), 'Rutina semanal v17'); }
-    catch { aviso('No pude abrir la rutina. ¿Tenés señal?'); }
+  exportarRutina(b) {
+    const evs = rutinaComoEventos(); if (!evs.length) return aviso('Tu rutina está vacía.');
+    const opciones = S.cals.filter(c => calEscribible(c.id)), rut = opciones.find(c => /rutina/i.test(c.summary));
+    hoja(`<h3>Pasar ${evs.length} actividades a Google</h3><p class="nota">Quedan como eventos que se repiten, con aviso 10 min antes de las comidas y 30 min antes del resto. En la agenda de la app se ven una sola vez.</p>
+      <label class="campo"><span>¿En qué calendario?</span><select id="im-c" class="in">${opciones.map(c => `<option value="${esc(c.id)}" ${c === rut ? 'selected' : ''}>${esc(c.summary)}</option>`).join('')}</select></label>
+      ${rut ? '' : '<p class="nota">Tip: creá antes un calendario "Rutina" en Google Calendar (Configuración → Añadir calendario → Crear calendario) para poder ocultarlo aparte.</p>'}
+      <p id="im-p" class="nota"></p><button class="btn prim ancho grande" id="im-ok">Pasar a Google</button>`);
+    $('#im-ok').onclick = async () => {
+      $('#im-ok').disabled = true; const calId = $('#im-c').value;
+      const r = await importarEventos(rutinaComoEventos(), calId, (i, t) => { $('#im-p').textContent = `Cargando ${i} de ${t}…`; });
+      const vis = cfg().cals || []; if (!vis.includes(calId)) setCfg({ cals: [...vis, calId] });
+      $('#im-p').textContent = r.mal ? `Pasé ${r.ok} de ${r.total}. ${r.mal} dieron error: ${r.error}` : `Listo: ${r.ok} actividades en Google Calendar.`;
+      $('#im-ok').textContent = 'Cerrar'; $('#im-ok').disabled = false; $('#im-ok').onclick = () => { cerrar(); render(); };
+    };
+  },
+  verRutina() { setCfg({ verRutina: cfg().verRutina === false }); render(); },
+  editarRut(b) { hojaRut(b.dataset.id, b.dataset.dia); },
+  ruDia(b) { b.classList.toggle('on'); },
+  ruFrec(b) { $('#hoja').dataset.frec = b.dataset.v; b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); },
+  guardarRut(b) {
+    const t = $('#ru-t').value.trim(); if (!t) return aviso('Ponele un nombre.');
+    const h = $('#ru-h').value, f = $('#ru-f').value; if (!h || !f) return aviso('Poné la hora.');
+    const dias = [...document.querySelectorAll('#ru-dias button.on')].map(x => +x.dataset.d);
+    const id = b.dataset.id || uid(), ya = rec('rut:' + id);
+    if (!dias.length && !ya?.fecha) return aviso('Elegí al menos un día.');
+    const frec = $('#hoja').dataset.frec, estaSem = paridad(ymd(lunes(new Date())));
+    const comida = $('#ru-c').value || null;
+    const d = { t, h, f, comida, plan: comida ? $('#ru-pl').value : null, detalle: $('#ru-d').value.trim() };
+    if (dias.length) { d.dias = dias; d.fecha = null; d.quin = frec === 'esta' ? estaSem : frec === 'proxima' ? (estaSem === 'A' ? 'B' : 'A') : null; }
+    poner('rut:' + id, { ...(ya || {}), ...d }); cerrar(); aviso('Rutina guardada'); render();
+  },
+  borrarRut(b) { if (confirm('¿Sacar esta actividad de tu rutina? Deja de aparecer todas las semanas.')) { borrar('rut:' + b.dataset.id); cerrar(); render(); } },
+  planDia(b) {
+    const e = buscarEvento($('#hoja').dataset.ev); if (!e) return;
+    cambiar(`rutx:${ymd(e.ini)}:${e.rid}`, { plan: b.dataset.v, oculto: 0 });
+    hojaEvento(buscarEvento(e.id)); render();
+  },
+  ocultarRutDia() {
+    const e = buscarEvento($('#hoja').dataset.ev); if (!e) return;
+    cambiar(`rutx:${ymd(e.ini)}:${e.rid}`, { oculto: 1 }); cerrar(); aviso(`Sacado solo del ${fechaCorta(ymd(e.ini))}`); render();
+  },
+  restaurarRutDia() {
+    const e = buscarEvento($('#hoja').dataset.ev); if (!e) return;
+    const k = `rutx:${ymd(e.ini)}:${e.rid}`;
+    if (rec(k)?.extra) { cambiar(k, { oculto: 1 }); } else borrar(k);
+    cerrar(); render();
+  },
+  editarOpcion(b) { hojaOpcion(b.dataset.tipo, b.dataset.i); },
+  guardarOpcion(b) {
+    const n = $('#op-n').value.trim(); if (!n) return aviso('Ponele un nombre.');
+    const p = plan(), t = b.dataset.tipo, lista = [...p.opciones[t]], i = b.dataset.i;
+    const vieja = i !== '' ? lista[+i]?.n : null, op = { n, d: $('#op-d').value.trim() };
+    if (i !== '') lista[+i] = op; else lista.push(op);
+    cambiar('plan:main', { ...p, opciones: { ...p.opciones, [t]: lista } });
+    if (vieja && vieja !== n) rutinas().filter(r => r.comida === t && r.plan === vieja).forEach(r => cambiar(r.k, { plan: n }));
+    cerrar(); render();
+  },
+  borrarOpcion(b) {
+    if (!confirm('¿Borrar esta opción del plan?')) return;
+    const p = plan(), t = b.dataset.tipo, lista = p.opciones[t].filter((_, j) => j !== +b.dataset.i);
+    const n = aplicarPlan({ ...p, opciones: { ...p.opciones, [t]: lista } });
+    cerrar(); if (n) aviso(`Reacomodé ${n} comidas de tu rutina.`); render();
+  },
+  cargarPlan() {
+    const inp = Object.assign(document.createElement('input'), { type: 'file', accept: '.json,application/json' });
+    inp.onchange = async () => {
+      try {
+        const d = JSON.parse(await inp.files[0].text()), nuevo = d.plan || d;
+        const n = aplicarPlan(nuevo);
+        aviso(`Plan "${nuevo.nombre || 'nuevo'}" cargado.${n ? ` Reacomodé ${n} comidas de tu rutina.` : ''}`); render();
+      } catch (e) { aviso('No pude leer el plan: ' + (e.message || 'archivo inválido')); }
+    };
+    inp.click();
   },
   exportar() {
     const a = document.createElement('a');
@@ -1158,6 +1436,11 @@ document.addEventListener('click', e => {
   e.preventDefault(); f(b, e);
 });
 document.addEventListener('change', e => {
+  if (e.target.id === 'ru-c') {
+    const t = e.target.value; $('#ru-pl-c').hidden = !t;
+    $('#ru-pl').innerHTML = t ? plan().opciones[t].map(o => `<option>${esc(o.n)}</option>`).join('') : '';
+  }
+  if (e.target.dataset.cant) { const p = plan(); cambiar('plan:main', { ...p, cantidades: { ...p.cantidades, [e.target.dataset.cant]: e.target.value.trim() } }); aviso('Guardado'); }
   if (e.target.id === 'pa-f') { const f = e.target.value; const ya = rec('pant:' + f)?.apps; if (ya) $('#pa-filas').innerHTML = ya.map(filaPantalla).join(''); }
 });
 document.addEventListener('keydown', e => {

@@ -115,6 +115,27 @@ main { max-width: 680px; margin: 0 auto; padding: 4px 16px 16px; }
 .ag-ev .h small { color: var(--sub); font-weight: 400; }
 .ag-ev .t { border-left: 3px solid var(--c); padding-left: 12px; flex: 1; min-width: 0; }
 .ag-ev .t small { display: block; color: var(--sub); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.atajos { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+.atajos button { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; font-weight: 600; font-size: 14px; }
+.rut-it, .op { display: flex; width: 100%; gap: 12px; text-align: left; padding: 9px 4px; border-top: 1px solid var(--line); align-items: flex-start; }
+.card > header + .rut-it, .card > header + .op { border-top: 0; }
+.rut-it .h { width: 46px; flex-shrink: 0; font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 600; }
+.rut-it .h small, .rut-it .t small, .op small { color: var(--sub); font-weight: 400; display: block; font-size: 13px; }
+.rut-it .t { flex: 1; min-width: 0; border-left: 3px solid #0d9488; padding-left: 10px; }
+.rut-it .act, .op .act { margin: 4px 0 0; }
+.op { flex-direction: column; gap: 2px; }
+.punto { display: inline-block; width: 9px; height: 9px; border-radius: 3px; vertical-align: middle; margin-right: 2px; }
+.cuerpo { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 8px; }
+.cuerpo > div { background: var(--soft); border-radius: 12px; padding: 10px; }
+.cuerpo small { display: block; color: var(--sub); font-size: 12px; }
+.cuerpo b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.cuerpo b small { display: inline; font-size: 12px; font-weight: 600; margin-left: 4px; }
+.det-t { font-size: 12px; color: var(--sub); text-transform: uppercase; letter-spacing: .05em; margin: 12px 0 4px; }
+.det { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; font-size: 13px; color: var(--ink); }
+.det b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.campo.chk { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.campo.chk input { width: 18px; height: 18px; accent-color: var(--acc); }
+#hoja .fila-b .campo { flex: 1; margin: 0; }
 .act { display: inline-block; font-style: normal; font-size: 12px; font-weight: 600; margin-left: 8px; padding: 1px 7px; border-radius: 8px; white-space: nowrap; }
 .act.ok { background: var(--ok-soft); color: var(--ok); } .act.otra { background: var(--warn-soft); color: var(--warn); } .act.no { background: var(--bad-soft); color: var(--bad); }
 .rut { display: flex; flex-direction: column; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }

@@ -1,6 +1,6 @@
 // Guarda la app para que abra rápido y sin señal. Subí VERSION en cada cambio.
-const VERSION = 'mt-4';
-const ARCHIVOS = ['./', 'index.html', 'estilos.css?v=4', 'config.js?v=4', 'rutina.js?v=4', 'app.js?v=4', 'manifest.webmanifest', 'icono.svg', 'icono-192.png'];
+const VERSION = 'mt-5';
+const ARCHIVOS = ['./', 'index.html', 'estilos.css?v=5', 'config.js?v=5', 'rutina.js?v=5', 'app.js?v=5', 'manifest.webmanifest', 'icono.svg', 'icono-192.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(ARCHIVOS)).then(() => self.skipWaiting()));
