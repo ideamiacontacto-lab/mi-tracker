@@ -73,6 +73,8 @@ main { max-width: 680px; margin: 0 auto; padding: 4px 16px 16px; }
 .chips-hab { display: flex; flex-wrap: wrap; gap: 8px; }
 .hab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line); font-size: 14px; }
 .hab i { font-style: normal; font-weight: 700; }
+.hab.nuevo, .cats .nueva { border: 1px dashed var(--line); background: none; color: var(--acc); }
+.lapiz { font-style: normal; color: var(--sub); margin-left: auto; padding: 0 6px; font-size: 16px; }
 .hab.si { background: var(--ok-soft); border-color: transparent; color: var(--ok); }
 .hab.no { background: var(--bad-soft); border-color: transparent; color: var(--bad); }
 

@@ -449,7 +449,7 @@ function pintarEstado() {
 function bannerAuth() {
   if (DEMO) return `<div class="banner demo">Modo demo: la agenda es tu rutina de ejemplo y nada sale de este navegador. Para conectar tu Google Calendar, seguí la guía y cargá el ID de cliente en <b>config.js</b>.</div>`;
   if (S.auth === 'no') return `<div class="banner"><div><b>Conectá tu Google</b><br>Para ver tu agenda y guardar todo en tu Drive. Los permisos los das vos, en tu cuenta.</div><button class="btn prim" data-a="conectar" data-p="1">Entrar con Google</button></div>`;
-  if (S.auth === 'vencido') return `<div class="banner suave"><div>La sesión de Google venció (dura 1 hora).</div><button class="btn" data-a="conectar">Reconectar</button></div>`;
+  if (S.auth === 'vencido') return `<div class="banner suave"><div>Tus datos están guardados. Tocá para traer la agenda nueva de Google.</div><button class="btn" data-a="conectar">Actualizar</button></div>`;
   return '';
 }
 
@@ -490,7 +490,7 @@ function vHoy() {
   </section>` : ''}
   <section class="card">
     <header><h2>Hábitos de hoy</h2><span class="cont">${hechos}/${hab.length}</span></header>
-    <div class="chips-hab">${hab.map(h => chipHabito(f, h)).join('') || '<p class="vacio">Todavía no cargaste hábitos.</p>'}</div>
+    <div class="chips-hab">${hab.map(h => chipHabito(f, h)).join('')}<button class="hab nuevo" data-a="editarHabito">+ Hábito</button></div>
   </section>
   <section class="card">
     <header><h2>Comidas</h2><span class="cont">${comOk}/${com.length}</span></header>
@@ -570,7 +570,7 @@ function vHabitos() {
   const filas = hab.map(h => {
     const id = h.k.slice(6), si = dias.filter(f => regHab(f, id) === 1).length, r = racha(h);
     return `<div class="hg-fila">
-      <button class="hg-n" data-a="editarHabito" data-id="${id}"><span>${esc(h.emoji || '•')}</span><span><b>${esc(h.nombre)}</b><small>${h.tipo === 'dejar' ? 'Dejar' : 'Hacer'} · ${si}/7${r > 1 ? ` · 🔥 ${r} días` : ''}</small></span></button>
+      <button class="hg-n" data-a="editarHabito" data-id="${id}"><span>${esc(h.emoji || '•')}</span><span><b>${esc(h.nombre)}</b><small>${h.tipo === 'dejar' ? 'Dejar' : 'Hacer'} · ${si}/7${r > 1 ? ` · 🔥 ${r} días` : ''}</small></span><i class="lapiz" title="Editar o borrar">✎</i></button>
       <div class="hg-d">${dias.map(f => { const v = regHab(f, id); return `<button class="${v === 1 ? 'si' : v === 0 ? 'no' : ''} ${f > HOY() ? 'fut' : ''}" data-a="habito" data-id="${id}" data-f="${f}">${v === 1 ? '✓' : v === 0 ? '✗' : ''}</button>`; }).join('')}</div>
     </div>`;
   }).join('');
@@ -584,7 +584,7 @@ function vHabitos() {
     <header><h2>Esta semana</h2><span class="cont">${posibles ? Math.round(totalSi / posibles * 100) : 0}% cumplido</span></header>
     <div class="hg-cab"><span></span><div class="hg-d">${dias.map(f => `<small class="${f === HOY() ? 'hoy' : ''}">${DC[deYmd(f).getDay()][0]}<br>${deYmd(f).getDate()}</small>`).join('')}</div></div>
     ${filas || '<p class="vacio">Sumá tu primer hábito.</p>'}
-    <p class="nota">Tocá un día: ✓ lo cumpliste, otra vez ✗ no, otra vez lo borra. En "dejar" (como no fumar), ✓ es un día sin hacerlo.</p>
+    <p class="nota">Tocá un día: ✓ lo cumpliste, otra vez ✗ no, otra vez lo borra. En "dejar" (como no fumar), ✓ es un día sin hacerlo. Para cambiar el nombre o borrar un hábito, tocá el ✎.</p>
     <button class="btn ancho" data-a="editarHabito">+ Nuevo hábito</button>
   </section>
   ${vRutinaSemana(dias)}
@@ -815,7 +815,8 @@ function hojaMov(tipo, id) {
   hoja(`
     <div class="seg tipo">${[['gasto', 'Gasto'], ['ingreso', 'Ingreso'], ['inversion', 'Inversión']].map(([k, t]) => `<button class="${k === tipo ? 'on' : ''}" data-a="cambiaTipoMov" data-t="${k}" ${id ? 'disabled' : ''}>${t}</button>`).join('')}</div>
     <div class="monto"><button class="mon" data-a="moneda" data-m="${mon}">${mon === 'USD' ? 'US$' : '$'}</button><input id="mv-monto" type="text" inputmode="decimal" placeholder="0" value="${ya ? String(ya.monto).replace('.', ',') : ''}" autocomplete="off"></div>
-    <div class="cats">${cats.map(x => `<button class="${x === sel ? 'on' : ''}" data-a="cat" data-c="${esc(x)}">${esc(x)}</button>`).join('')}</div>
+    <div class="cats" id="mv-cats">${cats.map(x => `<button class="${x === sel ? 'on' : ''}" data-a="cat" data-c="${esc(x)}">${esc(x)}</button>`).join('')}<button class="nueva" data-a="nuevaCat">+ Nueva</button></div>
+    <div class="fila-b" id="mv-nc" hidden><input id="mv-nc-t" class="in" placeholder="Ej: 🐶 Mascota"><button class="btn prim" data-a="guardarCat" data-t="${tipo}">Agregar</button></div>
     <input id="mv-nota" class="in" placeholder="Nota (opcional): ej. nafta, almuerzo con Ivo" value="${esc(ya?.nota || '')}">
     <div class="fila-b"><input id="mv-fecha" class="in" type="date" value="${ya?.fecha || HOY()}">
       ${id ? '<button class="btn peligro" data-a="borrarMov" data-id="' + id + '">Borrar</button>' : ''}
@@ -1013,6 +1014,15 @@ const A = {
   cambiaTipoMov(b) { hojaMov(b.dataset.t); },
   moneda(b) { const m = b.dataset.m === 'USD' ? 'ARS' : 'USD'; b.dataset.m = m; b.textContent = m === 'USD' ? 'US$' : '$'; },
   cat(b) { b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); },
+  nuevaCat() { $('#mv-nc').hidden = false; $('#mv-nc-t').focus(); },
+  guardarCat(b) {
+    const n = $('#mv-nc-t').value.trim(); if (!n) return aviso('Escribí el nombre de la categoría.');
+    const c = cfg(), tipo = b.dataset.t, lista = c.cats[tipo];
+    if (!lista.includes(n)) setCfg({ cats: { ...c.cats, [tipo]: [...lista, n] } });
+    const nb = Object.assign(document.createElement('button'), { textContent: n }); nb.dataset.a = 'cat'; nb.dataset.c = n;
+    $('#mv-cats').insertBefore(nb, $('#mv-cats .nueva')); A.cat(nb);
+    $('#mv-nc').hidden = true; $('#mv-nc-t').value = ''; aviso('Categoría agregada');
+  },
   guardarMov(b) {
     const monto = numero($('#mv-monto').value); if (!monto) { $('#mv-monto').focus(); return aviso('Poné el monto.'); }
     const tipo = b.dataset.t, cat = $('.cats button.on', $('#hoja'))?.dataset.c || cfg().cats[tipo][0];
@@ -1125,6 +1135,14 @@ const A = {
   }
 };
 
+// Google da permisos por 1 hora. Al primer toque después de que vence, se renueva solo
+// (necesita un toque porque el navegador solo deja abrir la ventanita de Google así).
+let renovando = false;
+document.addEventListener('click', e => {
+  if (!DEMO && S.auth === 'vencido' && tokenClient && !renovando && !e.target.closest('[data-a="conectar"]')) {
+    renovando = true; conectar(false).catch(() => { }).finally(() => { renovando = false; });
+  }
+}, true);
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-a]'); if (!b || b.disabled) return;
   const f = A[b.dataset.a]; if (!f) return;
