@@ -30,7 +30,12 @@ const DC = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const fechaLarga = s => { const d = deYmd(s); return `${DIAS[d.getDay()]} ${d.getDate()} de ${MESES[d.getMonth()]}`; };
 const fechaCorta = s => { const d = deYmd(s); return `${DC[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`; };
-const plata = (n, mon) => (n < 0 ? '−' : '') + (mon === 'USD' ? 'US$ ' : '$ ') + Math.abs(Math.round(n)).toLocaleString('es-AR');
+const plataOculta = () => LS.get('ocultarPlata', false);
+const plata = (n, mon) => {
+  const sig = mon === 'USD' ? 'US$ ' : '$ ';
+  return plataOculta() ? sig + '•••••' : (n < 0 ? '−' : '') + sig + Math.abs(Math.round(n)).toLocaleString('es-AR');
+};
+const ojo = () => `<button class="ojo" data-a="togglePlata" title="${plataOculta() ? 'Mostrar montos' : 'Ocultar montos'}">${plataOculta() ? '🙈' : '👁️'}</button>`;
 const durTxt = min => { min = Math.round(min); const h = Math.floor(min / 60), m = min % 60; return h ? `${h} h${m ? ' ' + m + ' min' : ''}` : `${m} min`; };
 const numero = v => { const n = parseFloat(String(v).replace(/\./g, '').replace(',', '.')); return isFinite(n) ? n : 0; };
 
@@ -294,10 +299,10 @@ async function moverEvento(ev, ini, todaLaSerie) {
 }
 async function crearEvento(calId, { titulo, ini, fin, desc, avisoMin }) {
   if (DEMO) {
-    const n = LS.get('demoNew', []); n.push({ id: 'n' + uid(), titulo, ini: ini.toISOString(), fin: fin.toISOString(), desc }); LS.set('demoNew', n);
-    S.ev = {}; return;
+    const n = LS.get('demoNew', []), id = 'n' + uid(); n.push({ id, titulo, ini: ini.toISOString(), fin: fin.toISOString(), desc }); LS.set('demoNew', n);
+    S.ev = {}; return { id };
   }
-  await gjson(`${CAL}/calendars/${encodeURIComponent(calId)}/events`, {
+  const creado = await gjson(`${CAL}/calendars/${encodeURIComponent(calId)}/events`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       summary: titulo, description: desc || undefined,
@@ -306,6 +311,7 @@ async function crearEvento(calId, { titulo, ini, fin, desc, avisoMin }) {
     })
   });
   S.evCarga = {}; S.ev = {};
+  return creado;
 }
 async function borrarEvento(ev) {
   if (DEMO) { const b = LS.get('demoBorr', []); b.push(ev.id); LS.set('demoBorr', b); LS.set('demoNew', LS.get('demoNew', []).filter(x => x.id !== ev.id)); S.ev = {}; return; }
@@ -386,6 +392,28 @@ function racha(h) {
   if (regHab(ymd(d), h.k.slice(6)) !== 1) d = sumar(d, -1);
   while (regHab(ymd(d), h.k.slice(6)) === 1) { n++; d = sumar(d, -1); }
   return n;
+}
+
+/* ---------- Tareas y recordatorios ----------
+   tarea:<id> { texto, fecha, hora, hecha, hechaEn, aviso, evId, calId }
+   El aviso es un evento en Google Calendar con alarma: así suena aunque la app esté cerrada. */
+const tareas = () => todos('tarea:').sort((a, b) => ((a.fecha || '9') + (a.hora || '')).localeCompare((b.fecha || '9') + (b.hora || '')) || (a.creado || 0) - (b.creado || 0));
+const tareasHoy = () => tareas().filter(t => t.hecha ? t.hechaEn === HOY() : !t.fecha || t.fecha <= HOY());
+const tareasDespues = () => tareas().filter(t => !t.hecha && t.fecha > HOY());
+function filaTarea(t) {
+  const id = t.k.slice(6), vencida = !t.hecha && t.fecha && t.fecha < HOY();
+  const cuando = [t.fecha && t.fecha !== HOY() ? fechaCorta(t.fecha) : '', t.hora || ''].filter(Boolean).join(' ');
+  return `<div class="tarea ${t.hecha ? 'hecha' : ''}">
+    <button class="tk" data-a="tildarTarea" data-id="${id}" aria-label="Hecha">${t.hecha ? '✓' : ''}</button>
+    <button class="tt" data-a="editarTarea" data-id="${id}"><span>${esc(t.texto)}</span>${cuando || t.aviso ? `<small class="${vencida ? 'rojo' : ''}">${t.aviso ? '🔔 ' : ''}${cuando}${vencida ? ' · atrasada' : ''}</small>` : ''}</button>
+  </div>`;
+}
+async function avisoTarea(t, id) {
+  const ini = conHora(t.fecha, t.hora), fin = new Date(ini.getTime() + 15 * 60000);
+  if (t.evId) { try { await borrarEvento({ id: t.evId, calId: t.calId }); } catch { } }
+  const calId = calPorDefecto();
+  const ev = await crearEvento(calId, { titulo: '🔔 ' + t.texto, ini, fin, desc: 'Recordatorio de Mi tracker', avisoMin: 0 });
+  cambiar('tarea:' + id, { evId: ev?.id || null, calId });
 }
 
 /* ---------- Eventos: lo hice a horario / a otra hora / no ---------- */
@@ -528,14 +556,16 @@ function render() {
 }
 function pintarEstado() {
   const el = $('#estado'); if (!el) return;
-  const t = DEMO ? ['demo', 'Modo demo'] : S.auth !== 'ok' ? ['off', 'Sin conectar'] :
+  const pendiente = Object.values(DB.items).some(r => r.u > LS.get('ultSync', 0));
+  const t = DEMO ? ['demo', 'Modo demo'] :
+    S.auth === 'vencido' ? ['off', pendiente ? '↑ Subir a Drive' : '↻ Actualizar'] : S.auth !== 'ok' ? ['off', 'Sin conectar'] :
     S.sync === 'subiendo' ? ['sync', 'Guardando…'] : S.sync === 'error' ? ['err', 'No se pudo guardar en Drive'] : ['ok', 'Guardado en tu Drive'];
   el.className = 'estado ' + t[0]; el.title = t[1]; el.innerHTML = `<i></i><span>${t[1]}</span>`;
+  if (S.auth === 'vencido') el.dataset.a = 'conectar'; else delete el.dataset.a;
 }
 function bannerAuth() {
   if (DEMO) return `<div class="banner demo">Modo demo: la agenda es tu rutina de ejemplo y nada sale de este navegador. Para conectar tu Google Calendar, seguí la guía y cargá el ID de cliente en <b>config.js</b>.</div>`;
   if (S.auth === 'no') return `<div class="banner"><div><b>Conectá tu Google</b><br>Para ver tu agenda y guardar todo en tu Drive. Los permisos los das vos, en tu cuenta.</div><button class="btn prim" data-a="conectar" data-p="1">Entrar con Google</button></div>`;
-  if (S.auth === 'vencido') return `<div class="banner suave"><div>Tus datos están guardados. Tocá para traer la agenda nueva de Google.</div><button class="btn" data-a="conectar">Actualizar</button></div>`;
   return '';
 }
 
@@ -560,11 +590,17 @@ function vHoy() {
     <button data-a="nuevoMov" data-t="gasto"><span>💸</span>Gasto</button>
     <button data-a="nuevoMov" data-t="ingreso"><span>💰</span>Ingreso</button>
     <button data-a="nuevoEvento"><span>📅</span>Reunión</button>
-    <button data-a="nuevaPantalla"><span>📱</span>Pantalla</button>
+    <button data-a="editarTarea"><span>✅</span>Tarea</button>
   </div>
   <section class="card">
     <header><h2>Lo que sigue</h2><button class="link" data-a="tab" data-t="agenda">Agenda →</button></header>
     ${prox.length ? prox.map((e, i) => filaEvento(e, i === 0)).join('') : (cargandoSemana(f) ? '<p class="vacio">Cargando agenda…</p>' : '<p class="vacio">No queda nada en la agenda de hoy.</p>')}
+  </section>
+  <section class="card">
+    <header><h2>Tareas</h2><span class="cont">${tareasHoy().filter(t => t.hecha).length}/${tareasHoy().length}</span></header>
+    <form class="tq" data-form="tareaRapida"><input id="tq" class="in" placeholder="Anotá algo para hacer y tocá Enter" autocomplete="off"><button type="button" class="btn" data-a="editarTarea" title="Con fecha, hora o aviso">🔔</button></form>
+    ${tareasHoy().map(filaTarea).join('')}
+    ${tareasDespues().length ? `<details class="ayuda"><summary>${tareasDespues().length} para más adelante</summary>${tareasDespues().map(filaTarea).join('')}</details>` : ''}
   </section>
   ${pasados.length ? `<section class="card">
     <header><h2>¿Cómo te fue?</h2><span class="cont">${pasados.length} sin marcar</span></header>
@@ -585,7 +621,7 @@ function vHoy() {
     ${com.map(c => filaComida(f, c)).join('')}
   </section>
   <section class="card">
-    <header><h2>Plata</h2><button class="link" data-a="tab" data-t="plata">Ver mes →</button></header>
+    <header><h2>Plata ${ojo()}</h2><button class="link" data-a="tab" data-t="plata">Ver mes →</button></header>
     <div class="dupla">
       <div><small>Gastaste hoy</small><b>${totalesTxt(gHoy)}</b></div>
       <div><small>Gastos de ${MESES[+f.slice(5, 7) - 1]}</small><b>${totalesTxt(mes.filter(m => m.tipo === 'gasto'))}</b></div>
@@ -646,6 +682,7 @@ function vAgenda() {
   </div>
   <div class="tira">${tira}</div>
   ${S.dia !== HOY() ? `<button class="link centro" data-a="dia" data-f="${HOY()}">Volver a hoy</button>` : ''}
+  ${(() => { const ts = tareas().filter(t => t.fecha === S.dia); return ts.length ? `<section class="card"><header><h2>Tareas del día</h2></header>${ts.map(filaTarea).join('')}</section>` : ''; })()}
   <section class="agenda">${cargandoSemana(S.dia) ? '<p class="nota">Trayendo tu agenda de Google…</p>' : ''}${filas || '<p class="vacio">Día libre. Tocá + para agendar algo.</p>'}</section>
   <p class="nota"><span class="punto" style="background:#0d9488"></span> Mi rutina · <button class="link" data-a="tab" data-t="rutina">editar</button>
   ${!DEMO && S.auth === 'ok' ? `<br>Google: ${calsVisibles().map(id => esc(calInfo(id).summary)).join(', ')} · <button class="link" data-a="calendarios">cambiar</button>` : ''}</p>`;
@@ -898,7 +935,7 @@ function vPlata() {
   const filtrada = lista.filter(x => S.filtroMov === 'todo' || x.tipo === S.filtroMov).sort((a, b) => (b.fecha + (b.creado || '')).localeCompare(a.fecha + (a.creado || '')));
   const porDia = {}; filtrada.forEach(x => (porDia[x.fecha] = porDia[x.fecha] || []).push(x));
   return `
-  <div class="semana-nav"><button class="icon" data-a="mes" data-n="-1">‹</button><b>${MESES[m - 1].replace(/^./, x => x.toUpperCase())} ${a}</b><button class="icon" data-a="mes" data-n="1">›</button></div>
+  <div class="semana-nav"><button class="icon" data-a="mes" data-n="-1">‹</button><b>${MESES[m - 1].replace(/^./, x => x.toUpperCase())} ${a} ${ojo()}</b><button class="icon" data-a="mes" data-n="1">›</button></div>
   ${tarjeta('ARS')}${tarjeta('USD')}
   <section class="card">
     <header><h2>Gastos por categoría</h2>${gastos.some(x => x.moneda === 'USD') && !c.dolar ? '<button class="link" data-a="ajustes">Cargar dólar</button>' : ''}</header>
@@ -1097,6 +1134,21 @@ function hojaRut(id, dia) {
     o => !r && setTimeout(() => $('#ru-t', o)?.focus(), 250));
   $('#hoja').dataset.frec = frec;
 }
+function hojaTarea(id, conAviso) {
+  const t = id ? rec('tarea:' + id) : null, aviso = t ? !!t.aviso : !!conAviso;
+  const man = ymd(sumar(new Date(), 1));
+  const f = t?.fecha || (aviso ? HOY() : '');
+  hoja(`
+    <h3>${t ? 'Editar' : aviso ? 'Nuevo recordatorio' : 'Nueva tarea'}</h3>
+    <input id="ta-t" class="in" placeholder="Ej: Pagar el monotributo, llamar a la nutri" value="${esc(t?.texto || '')}" autocomplete="off">
+    <h4>¿Para cuándo?</h4>
+    <div class="cats" id="ta-dias">${[['', 'Sin fecha'], [HOY(), 'Hoy'], [man, 'Mañana']].map(([v, n]) => `<button class="${f === v ? 'on' : ''}" data-a="taDia" data-v="${v}">${n}</button>`).join('')}</div>
+    <div class="fila-b"><input id="ta-f" class="in" type="date" value="${f}"><input id="ta-h" class="in" type="time" value="${t?.hora || ''}"></div>
+    <label class="campo chk"><input type="checkbox" id="ta-av" ${aviso ? 'checked' : ''}> 🔔 Avisarme en el celu a esa hora</label>
+    <p class="nota">El aviso se crea como evento en tu Google Calendar, así te suena aunque la app esté cerrada. Necesita fecha y hora.</p>
+    <div class="fila-b">${t ? `<button class="btn peligro" data-a="borrarTarea" data-id="${id}">Borrar</button>` : ''}<button class="btn prim grande" data-a="guardarTarea" data-id="${id || ''}">Guardar</button></div>`,
+    o => !t && setTimeout(() => $('#ta-t', o)?.focus(), 250));
+}
 function hojaOpcion(tipo, i) {
   const op = i != null ? plan().opciones[tipo][+i] : null, info = COMIDAS.find(c => c[0] === tipo);
   hoja(`
@@ -1166,6 +1218,35 @@ function abrirCalendarios(primera) {
 const A = {
   tab(b) { S.tab = b.dataset.t; LS.set('tab', S.tab); if (S.tab === 'agenda' || S.tab === 'comidas') S.dia = S.dia || HOY(); render(); scrollTo(0, 0); },
   ajustes() { S.tab = 'ajustes'; render(); scrollTo(0, 0); },
+  togglePlata() { LS.set('ocultarPlata', !plataOculta()); render(); },
+  editarTarea(b) { hojaTarea(b.dataset.id, b.dataset.aviso); },
+  taDia(b) { $('#ta-f').value = b.dataset.v; b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); },
+  tildarTarea(b) {
+    const k = 'tarea:' + b.dataset.id, t = rec(k); if (!t) return;
+    cambiar(k, t.hecha ? { hecha: false, hechaEn: null } : { hecha: true, hechaEn: HOY() });
+    if (!t.hecha && navigator.vibrate) navigator.vibrate(10);
+    render();
+  },
+  async guardarTarea(b) {
+    const texto = $('#ta-t').value.trim(); if (!texto) return aviso('Escribí la tarea.');
+    const fecha = $('#ta-f').value || null, hora = $('#ta-h').value || null, quiereAviso = $('#ta-av').checked;
+    if (quiereAviso && (!fecha || !hora)) return aviso('Para el aviso poné fecha y hora.');
+    const id = b.dataset.id || uid(), ya = rec('tarea:' + id);
+    poner('tarea:' + id, { ...(ya || {}), texto, fecha, hora, aviso: quiereAviso, creado: ya?.creado || Date.now(), hecha: ya?.hecha || false });
+    const cambioAviso = quiereAviso && (!ya?.aviso || ya.fecha !== fecha || ya.hora !== hora || ya.texto !== texto);
+    if (!quiereAviso && ya?.evId) { borrarEvento({ id: ya.evId, calId: ya.calId }).catch(() => { }); cambiar('tarea:' + id, { evId: null }); }
+    cerrar(); render();
+    if (!cambioAviso) return aviso('Tarea guardada');
+    try {
+      if (!DEMO && S.auth !== 'ok') await conectar(false);
+      await avisoTarea(rec('tarea:' + id), id); aviso(`🔔 Te aviso el ${fechaCorta(fecha)} a las ${hora}`);
+    } catch (e) { aviso('La tarea quedó guardada, pero no pude crear el aviso en Google. Probá de nuevo desde la tarea.'); }
+  },
+  borrarTarea(b) {
+    const k = 'tarea:' + b.dataset.id, t = rec(k);
+    if (t?.evId) borrarEvento({ id: t.evId, calId: t.calId }).catch(() => { });
+    borrar(k); cerrar(); render();
+  },
   cerrar,
   conectar(b) { conectar(!!b.dataset.p || !LS.get('conectado')).catch(() => { }); },
   desconectar() { if (confirm('¿Desconectar tu cuenta de Google en este navegador? Tus datos quedan guardados.')) desconectar(); },
@@ -1422,18 +1503,19 @@ const A = {
   }
 };
 
-// Google da permisos por 1 hora. Al primer toque después de que vence, se renueva solo
-// (necesita un toque porque el navegador solo deja abrir la ventanita de Google así).
-let renovando = false;
-document.addEventListener('click', e => {
-  if (!DEMO && S.auth === 'vencido' && tokenClient && !renovando && !e.target.closest('[data-a="conectar"]')) {
-    renovando = true; conectar(false).catch(() => { }).finally(() => { renovando = false; });
-  }
-}, true);
+// Anotar nunca pide Google: todo se guarda en el celu al instante. Google solo hace
+// falta para subir a Drive y traer reuniones; eso se hace tocando el puntito de arriba.
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-a]'); if (!b || b.disabled) return;
   const f = A[b.dataset.a]; if (!f) return;
   e.preventDefault(); f(b, e);
+});
+document.addEventListener('submit', e => {
+  if (e.target.dataset.form !== 'tareaRapida') return;
+  e.preventDefault();
+  const texto = $('#tq').value.trim(); if (!texto) return;
+  poner('tarea:' + uid(), { texto, fecha: null, hora: null, hecha: false, creado: Date.now() });
+  render(); $('#tq')?.focus();
 });
 document.addEventListener('change', e => {
   if (e.target.id === 'ru-c') {
@@ -1453,7 +1535,8 @@ $('#fab').addEventListener('click', () => {
   hoja(`<h3>¿Qué querés cargar?</h3><div class="menu-r">
     <button data-a="nuevoMov" data-t="gasto"><span>💸</span>Gasto</button><button data-a="nuevoMov" data-t="ingreso"><span>💰</span>Ingreso</button>
     <button data-a="nuevoMov" data-t="inversion"><span>📈</span>Inversión</button><button data-a="nuevoEvento"><span>📅</span>Reunión</button>
-    <button data-a="nuevaPantalla"><span>📱</span>Pantalla</button><button data-a="editarHabito"><span>✨</span>Hábito</button></div>`);
+    <button data-a="nuevaPantalla"><span>📱</span>Pantalla</button><button data-a="editarHabito"><span>✨</span>Hábito</button>
+    <button data-a="editarTarea"><span>✅</span>Tarea</button><button data-a="editarTarea" data-aviso="1"><span>🔔</span>Recordatorio</button></div>`);
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
