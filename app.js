@@ -35,7 +35,7 @@ const plata = (n, mon) => {
   const sig = mon === 'USD' ? 'US$ ' : '$ ';
   return plataOculta() ? sig + '•••••' : (n < 0 ? '−' : '') + sig + Math.abs(Math.round(n)).toLocaleString('es-AR');
 };
-const ojo = () => `<button class="ojo" data-a="togglePlata" title="${plataOculta() ? 'Mostrar montos' : 'Ocultar montos'}">${plataOculta() ? '🙈' : '👁️'}</button>`;
+const ojo = () => `<button class="ojo" data-a="togglePlata" title="${plataOculta() ? 'Mostrar montos' : 'Ocultar montos'}">${ic(plataOculta() ? 'ojoNo' : 'ojo')}</button>`;
 const durTxt = min => { min = Math.round(min); const h = Math.floor(min / 60), m = min % 60; return h ? `${h} h${m ? ' ' + m + ' min' : ''}` : `${m} min`; };
 const numero = v => { const n = parseFloat(String(v).replace(/\./g, '').replace(',', '.')); return isFinite(n) ? n : 0; };
 
@@ -60,7 +60,7 @@ const CATS_DEF = {
   inversion: ['💵 Dólares', '🏦 Plazo fijo', '📊 FCI', '📈 Acciones / CEDEARs', '🪙 Cripto', '📦 Otros']
 };
 const GRUPOS = [['alm', 'Almidones'], ['car', 'Carnes'], ['ver', 'Verduras'], ['fru', 'Frutas'], ['lac', 'Lácteos'], ['gra', 'Grasas']];
-const COMIDAS = [['desayuno', 'Desayuno', '☕'], ['almuerzo', 'Almuerzo', '🍽️'], ['merienda', 'Merienda', '🥪'], ['cena', 'Cena', '🌙']];
+const COMIDAS = [['desayuno', 'Desayuno', 'desayuno'], ['almuerzo', 'Almuerzo', 'almuerzo'], ['merienda', 'Merienda', 'merienda'], ['cena', 'Cena', 'cena']];
 const APPS_PANTALLA = ['Instagram', 'TikTok', 'WhatsApp', 'YouTube', 'X / Twitter', 'Juegos', 'Navegador', 'Trabajo', 'Otros'];
 
 function cfg() {
@@ -387,6 +387,9 @@ function ciclarHabito(fecha, id) {
   const k = `hl:${fecha}:${id}`, v = rec(k)?.v;
   if (v === undefined) poner(k, { v: 1 }); else if (v === 1) poner(k, { v: 0 }); else borrar(k);
 }
+// Meta: cuántos días por semana (1 a 7). Sin meta = todos los días.
+const metaHab = h => h.meta || 7;
+const hechosSemana = (h, f = HOY()) => { const lu = lunes(deYmd(f)); return [...Array(7)].map((_, i) => ymd(sumar(lu, i))).filter(d => regHab(d, h.k.slice(6)) === 1).length; };
 function racha(h) {
   let n = 0, d = new Date();
   if (regHab(ymd(d), h.k.slice(6)) !== 1) d = sumar(d, -1);
@@ -404,8 +407,8 @@ function filaTarea(t) {
   const id = t.k.slice(6), vencida = !t.hecha && t.fecha && t.fecha < HOY();
   const cuando = [t.fecha && t.fecha !== HOY() ? fechaCorta(t.fecha) : '', t.hora || ''].filter(Boolean).join(' ');
   return `<div class="tarea ${t.hecha ? 'hecha' : ''}">
-    <button class="tk" data-a="tildarTarea" data-id="${id}" aria-label="Hecha">${t.hecha ? '✓' : ''}</button>
-    <button class="tt" data-a="editarTarea" data-id="${id}"><span>${esc(t.texto)}</span>${cuando || t.aviso ? `<small class="${vencida ? 'rojo' : ''}">${t.aviso ? '🔔 ' : ''}${cuando}${vencida ? ' · atrasada' : ''}</small>` : ''}</button>
+    <button class="tk" data-a="tildarTarea" data-id="${id}" aria-label="Hecha">${t.hecha ? ic('check') : ''}</button>
+    <button class="tt" data-a="editarTarea" data-id="${id}"><span>${esc(t.texto)}</span>${cuando || t.aviso ? `<small class="${vencida ? 'rojo' : ''}">${t.aviso ? ic('aviso', 'mini') : ''}${cuando}${vencida ? ' · atrasada' : ''}</small>` : ''}</button>
   </div>`;
 }
 async function avisoTarea(t, id) {
@@ -417,21 +420,25 @@ async function avisoTarea(t, id) {
 }
 
 /* ---------- Eventos: lo hice a horario / a otra hora / no ---------- */
-const claveAct = ev => `act:${ymd(ev.ini)}:${ev.id}`;
-const regAct = ev => rec(claveAct(ev));
+// La marca se guarda por día + nombre de la actividad (no por id), así no se pierde
+// si movés la actividad en la rutina o si la misma está también en Google.
+const slug = t => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+const claveAct = ev => `act:${ymd(ev.ini)}:${slug(ev.titulo)}`;
+const regAct = ev => rec(claveAct(ev)) || rec(`act:${ymd(ev.ini)}:${ev.id}`);
 const seRegistra = ev => !ev.todoDia && !esComida(ev);
 function marcarAct(ev, estado, hora) {
-  const k = claveAct(ev), ya = rec(k);
+  const k = claveAct(ev), ya = regAct(ev);
+  if (ya && ya.k !== k) borrar(ya.k);
   if (ya && ya.estado === estado && estado !== 'otra') { borrar(k); return; }
   poner(k, { estado, hora: hora || null, plan: hm(ev.ini), titulo: ev.titulo });
 }
 const minutos = h => { const [a, b] = h.split(':').map(Number); return a * 60 + b; };
 function pillAct(ev) {
   const r = regAct(ev); if (!r) return '';
-  if (r.estado === 'ok') return '<em class="act ok">✓ Hecho</em>';
-  if (r.estado === 'no') return '<em class="act no">✗ No</em>';
+  if (r.estado === 'ok') return `<em class="act ok">${ic('check', 'mini')} Hecho</em>`;
+  if (r.estado === 'no') return `<em class="act no">${ic('x', 'mini')} No</em>`;
   const d = minutos(r.hora) - minutos(r.plan);
-  return `<em class="act otra">🕒 ${r.hora}${d ? ` (${d > 0 ? '+' : '−'}${durTxt(Math.abs(d))})` : ''}</em>`;
+  return `<em class="act otra">${ic('reloj', 'mini')} ${r.hora}${d ? ` (${d > 0 ? '+' : '−'}${durTxt(Math.abs(d))})` : ''}</em>`;
 }
 
 /* ---------- Sincronización con Drive (appDataFolder) ---------- */
@@ -441,22 +448,25 @@ async function sincronizar() {
   if (DEMO || S.auth !== 'ok' || syncCorriendo) return;
   syncCorriendo = true; S.sync = 'subiendo'; pintarEstado();
   try {
-    let id = LS.get('fileId', null);
-    if (!id) {
-      const r = await gjson(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&fields=files(id)&q=${encodeURIComponent("name='tracker.json'")}`);
-      id = r.files?.[0]?.id || null;
+    // Siempre buscamos TODOS los tracker.json (antes un error de red podía crear un
+    // segundo archivo y cada dispositivo quedaba guardando en uno distinto). Se juntan
+    // todos en el más viejo y los demás se borran después de juntarlos.
+    const lista = await gjson(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&orderBy=createdTime&fields=files(id)&q=${encodeURIComponent("name='tracker.json'")}`);
+    const ids = (lista.files || []).map(f => f.id);
+    let id = ids[0] || null;
+    const remoto = { items: {} }, leidos = [];
+    for (const fid of ids) {
+      // si un archivo no se puede leer, se corta: nunca se pisa nada sin haberlo leído
+      const datos = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`)).json();
+      for (const k in datos.items || {}) { const r = datos.items[k], x = remoto.items[k]; if (!x || r.u > x.u) remoto.items[k] = r; }
+      leidos.push(fid);
     }
-    let remoto = { items: {} };
-    if (id) {
-      try { remoto = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`)).json(); }
-      catch (e) { if (e.message === 'auth') throw e; id = null; }
-    }
-    let localCambio = false, remotoCambio = !id;
-    for (const k in remoto.items || {}) {
+    let localCambio = false, remotoCambio = !id || ids.length > 1;
+    for (const k in remoto.items) {
       const r = remoto.items[k], l = DB.items[k];
       if (!l || r.u > l.u) { DB.items[k] = r; localCambio = true; }
     }
-    for (const k in DB.items) { const r = remoto.items?.[k]; if (!r || DB.items[k].u > r.u) { remotoCambio = true; break; } }
+    for (const k in DB.items) { const r = remoto.items[k]; if (!r || DB.items[k].u > r.u) { remotoCambio = true; break; } }
     if (localCambio) { LS.set('db', DB); render(); }
     if (remotoCambio) {
       const cuerpo = JSON.stringify(DB);
@@ -469,6 +479,7 @@ async function sincronizar() {
         id = r.id;
       }
     }
+    for (const fid of leidos.slice(1)) await gfetch(`https://www.googleapis.com/drive/v3/files/${fid}`, { method: 'DELETE' }).catch(() => { });
     LS.set('fileId', id); S.sync = 'ok'; LS.set('ultSync', Date.now());
   } catch (e) { S.sync = e.message === 'auth' ? 'local' : 'error'; console.warn('sync', e); }
   syncCorriendo = false; pintarEstado();
@@ -543,13 +554,52 @@ async function importarEventos(evs, calId, progreso) {
 
 /* ====================================================================== */
 /* ---------- Vistas ---------- */
-const TABS = [['hoy', 'Hoy', 'M3 12l9-8 9 8M5 10v10h14V10'], ['agenda', 'Agenda', 'M4 6h16v14H4zM4 10h16M9 3v4M15 3v4'], ['habitos', 'Hábitos', 'M5 12l4 4L19 6'], ['comidas', 'Comidas', 'M7 3v8a2 2 0 0 0 4 0V3M9 11v10M17 3c-2 2-2 6 0 8v10'], ['plata', 'Plata', 'M12 3v18M17 7H9.5a3 3 0 0 0 0 6h5a3 3 0 0 1 0 6H6']];
+/* ---------- Íconos (trazo fino, estilo Lucide) ---------- */
+const IC = {
+  hoy: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M10 20v-6h4v6"/>',
+  agenda: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  calPlus: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M12 13v5M9.5 15.5h5"/>',
+  habitos: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r=".8" fill="currentColor"/>',
+  comidas: '<path d="M7 3v8a2 2 0 0 0 4 0V3M9 11v10"/><path d="M17 21V3c-2.2 1.3-3 4-3 7 0 2 1 3 3 3"/>',
+  plata: '<path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3"/><rect x="4" y="8" width="16" height="11.5" rx="2.5"/><path d="M16 13.75h.01" stroke-width="2.6"/>',
+  gasto: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v9M8.5 13 12 16.5 15.5 13"/>',
+  ingreso: '<circle cx="12" cy="12" r="8.5"/><path d="M12 16.5v-9M8.5 11 12 7.5l3.5 3.5"/>',
+  inversion: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+  tarea: '<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="m8 12 3 3 5-6"/>',
+  aviso: '<path d="M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  pantalla: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
+  habito: '<path d="M12 3.5 14 9l5.5.4-4.2 3.6 1.3 5.5L12 15.6l-4.6 2.9 1.3-5.5L4.5 9.4 10 9z"/>',
+  ojo: '<path d="M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  ojoNo: '<path d="M3 3l18 18"/><path d="M10.6 5.1A9.6 9.6 0 0 1 12 5c6 0 9.5 7 9.5 7a16 16 0 0 1-3 3.8M6.6 6.6A16 16 0 0 0 2.5 12S6 19 12 19a9 9 0 0 0 4.4-1.1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
+  desayuno: '<path d="M4 9h12v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M16 10h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M8 3.5v2M12 3.5v2"/>',
+  almuerzo: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>',
+  merienda: '<path d="M12 7.5c-1-2-3-3-5-2.5C4 5.8 3.5 9.3 4.5 12.8 5.5 16.8 8 20 10 20c1 0 1.3-.5 2-.5s1 .5 2 .5c2 0 4.5-3.2 5.5-7.2 1-3.5.5-7-2.5-7.8-2-.5-4 .5-5 2.5z"/><path d="M12 7.5c0-2 1-3.5 3-4"/>',
+  cena: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  cambio: '<path d="M4 8h13l-3-3M20 16H7l3 3"/>',
+  reloj: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  racha: '<path d="M12 21c-4 0-7-2.7-7-6.5 0-3 2-5 3.5-6.5.3 1.6 1.2 2.6 2.5 3 0-3.5 1.5-6.5 4-8 .2 3 1.6 4.8 3 6.5 1 1.3 1 2.7 1 4.5 0 4-3 7-7 7z"/>',
+  lapiz: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m14 6 4 4"/>',
+  plan: '<path d="M5 19c0-8 5-14 15-14 0 10-6 15-14 15"/><path d="M5 19 14 10"/>',
+  rutina: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>',
+  subir: '<path d="M7 18a4.5 4.5 0 0 1-.5-9A6 6 0 0 1 18 8a4 4 0 0 1 0 10"/><path d="M12 12v8M9 15l3-3 3 3"/>',
+  actualizar: '<path d="M20 12a8 8 0 1 1-2.3-5.6L20 8.5"/><path d="M20 3.5v5h-5"/>',
+  mas: '<path d="M12 5v14M5 12h14"/>'
+};
+const ic = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n] || ''}</svg>`;
+// Anillo de progreso para el resumen del día
+const anillo = (hechos, total, color, etiqueta) => {
+  const p = total ? Math.min(1, hechos / total) : 0, L = 2 * Math.PI * 16;
+  return `<div class="anillo" style="--c:${color}"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" class="fondo-a"/>${p ? `<circle cx="20" cy="20" r="16" class="arco" stroke-dasharray="${(p * L).toFixed(1)} ${L.toFixed(1)}"/>` : ''}</svg><b>${hechos}<small>/${total}</small></b><span>${etiqueta}</span></div>`;
+};
+const TABS = [['hoy', 'Hoy'], ['agenda', 'Agenda'], ['habitos', 'Hábitos'], ['comidas', 'Comidas'], ['plata', 'Plata']];
 const icono = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
 
 function render() {
   const v = { hoy: vHoy, agenda: vAgenda, habitos: vHabitos, comidas: vComidas, plata: vPlata, ajustes: vAjustes, rutina: vRutina, plan: vPlan }[S.tab] || vHoy;
   $('#vista').innerHTML = bannerAuth() + v();
-  $('#nav').innerHTML = TABS.map(([id, t, d]) => `<button class="${S.tab === id || (id === 'comidas' && S.tab === 'plan') || (id === 'agenda' && S.tab === 'rutina') ? 'on' : ''}" data-a="tab" data-t="${id}">${icono(d)}<span>${t}</span></button>`).join('');
+  $('#nav').innerHTML = TABS.map(([id, t]) => `<button class="${S.tab === id || (id === 'comidas' && S.tab === 'plan') || (id === 'agenda' && S.tab === 'rutina') ? 'on' : ''}" data-a="tab" data-t="${id}">${ic(id)}<span>${t}</span></button>`).join('');
   $('#titulo').textContent = { hoy: 'Hoy', agenda: 'Agenda', habitos: 'Hábitos', comidas: 'Comidas', plata: 'Plata', ajustes: 'Ajustes', rutina: 'Mi rutina', plan: 'Mi plan' }[S.tab];
   $('#fab').hidden = !['hoy', 'plata', 'agenda'].includes(S.tab);
   pintarEstado();
@@ -584,13 +634,18 @@ function vHoy() {
   const pasados = (evs || []).filter(e => seRegistra(e) && e.ini <= ahora && !regAct(e));
   const sinDatos = !DEMO && !todos('rut:').length && !todos('plan:').length;
   return `
-  <section class="hola"><h1>${saludo}</h1><p>${fechaLarga(f)}</p></section>
+  <section class="hola"><p>${fechaLarga(f).replace(/^./, x => x.toUpperCase())}</p><h1>${saludo}</h1></section>
+  <section class="card resumen">
+    ${anillo(hechos, hab.length, 'var(--c-hab)', 'Hábitos')}
+    ${anillo(comOk, com.length, 'var(--c-com)', 'Comidas')}
+    ${anillo(tareasHoy().filter(t => t.hecha).length, tareasHoy().length, 'var(--c-tar)', 'Tareas')}
+  </section>
   ${sinDatos ? `<div class="banner"><div><b>Cargá tu rutina, tu plan y tus medidas</b><br>Elegí el archivo <i>mi-tracker-datos.json</i> que te dejó Claude en Descargas. Es una sola vez: después viaja solo por tu Drive al celu.</div><button class="btn prim" data-a="restaurar">Cargar archivo</button></div>` : ''}
   <div class="rapidos">
-    <button data-a="nuevoMov" data-t="gasto"><span>💸</span>Gasto</button>
-    <button data-a="nuevoMov" data-t="ingreso"><span>💰</span>Ingreso</button>
-    <button data-a="nuevoEvento"><span>📅</span>Reunión</button>
-    <button data-a="editarTarea"><span>✅</span>Tarea</button>
+    <button class="t-gasto" data-a="nuevoMov" data-t="gasto"><span>${ic('gasto')}</span>Gasto</button>
+    <button class="t-ingreso" data-a="nuevoMov" data-t="ingreso"><span>${ic('ingreso')}</span>Ingreso</button>
+    <button class="t-reunion" data-a="nuevoEvento"><span>${ic('calPlus')}</span>Reunión</button>
+    <button class="t-tarea" data-a="editarTarea"><span>${ic('tarea')}</span>Tarea</button>
   </div>
   <section class="card">
     <header><h2>Lo que sigue</h2><button class="link" data-a="tab" data-t="agenda">Agenda →</button></header>
@@ -605,11 +660,11 @@ function vHoy() {
   ${pasados.length ? `<section class="card">
     <header><h2>¿Cómo te fue?</h2><span class="cont">${pasados.length} sin marcar</span></header>
     ${pasados.map(e => `<div class="com">
-      <button class="com-t" data-a="verEvento" data-id="${esc(e.id)}"><span class="e">🗓️</span><span><b>${esc(e.titulo)}</b><br><span class="sub">Planeado ${hm(e.ini)}</span></span></button>
+      <button class="com-t" data-a="verEvento" data-id="${esc(e.id)}"><span class="e m-ev">${ic('agenda')}</span><span><b>${esc(e.titulo)}</b><br><span class="sub">Planeado ${hm(e.ini)}</span></span></button>
       <div class="com-b">
-        <button data-a="act" data-est="ok" data-id="${esc(e.id)}" title="Lo hice a horario">✓</button>
-        <button data-a="verEvento" data-id="${esc(e.id)}" data-otra="1" title="Lo hice a otra hora">🕒</button>
-        <button data-a="act" data-est="no" data-id="${esc(e.id)}" title="No lo hice">✗</button>
+        <button data-a="act" data-est="ok" data-id="${esc(e.id)}" title="Lo hice a horario">${ic('check')}</button>
+        <button data-a="verEvento" data-id="${esc(e.id)}" data-otra="1" title="Lo hice a otra hora">${ic('reloj')}</button>
+        <button data-a="act" data-est="no" data-id="${esc(e.id)}" title="No lo hice">${ic('x')}</button>
       </div></div>`).join('')}
   </section>` : ''}
   <section class="card">
@@ -643,18 +698,19 @@ function filaEvento(e, destacar) {
 function chipHabito(f, h) {
   const v = regHab(f, h.k.slice(6));
   const cls = v === 1 ? 'si' : v === 0 ? 'no' : '';
-  return `<button class="hab ${cls}" data-a="habito" data-id="${h.k.slice(6)}" data-f="${f}"><span>${esc(h.emoji || '•')}</span>${esc(h.nombre)}<i>${v === 1 ? '✓' : v === 0 ? '✗' : ''}</i></button>`;
+  const m = metaHab(h), n = hechosSemana(h, f);
+  return `<button class="hab ${cls}" data-a="habito" data-id="${h.k.slice(6)}" data-f="${f}"><span class="he">${esc(h.emoji || '•')}</span><span class="hn">${esc(h.nombre)}${m < 7 ? `<small>${n}/${m} esta semana</small>` : ''}</span><i>${v === 1 ? ic('check') : v === 0 ? ic('x') : ''}</i></button>`;
 }
 function filaComida(f, c) {
   const r = regComida(f, c.tipo), info = COMIDAS.find(x => x[0] === c.tipo);
   const est = r?.estado;
   const sub = est === 'cambio' ? '↺ ' + ([r.variante, r.nota].filter(Boolean).join(' · ') || 'Con cambios') : est === 'no' ? 'No la hice' + (r.nota ? ' · ' + r.nota : '') : c.plan;
   return `<div class="com ${est || ''}">
-    <button class="com-t" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}"><span class="e">${info[2]}</span><span><b>${info[1]}</b> <small>${c.hora}</small><br><span class="sub">${esc(sub)}</span></span></button>
+    <button class="com-t" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}"><span class="e m-${c.tipo}">${ic(info[2])}</span><span><b>${info[1]}</b> <small>${c.hora}</small><br><span class="sub">${esc(sub)}</span></span></button>
     <div class="com-b">
-      <button class="${est === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${c.tipo}" title="La hice">✓</button>
-      <button class="${est === 'cambio' ? 'on' : ''}" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}" data-cambio="1" title="Comí otra cosa">↺</button>
-      <button class="${est === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${c.tipo}" title="No la hice">✗</button>
+      <button class="${est === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${c.tipo}" title="La hice">${ic('check')}</button>
+      <button class="${est === 'cambio' ? 'on' : ''}" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}" data-cambio="1" title="Comí otra cosa">${ic('cambio')}</button>
+      <button class="${est === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${c.tipo}" title="No la hice">${ic('x')}</button>
     </div></div>`;
 }
 
@@ -694,14 +750,15 @@ function vHabitos() {
   const fin = sumar(lu, 6);
   const titulo = `${lu.getDate()}/${lu.getMonth() + 1} al ${fin.getDate()}/${fin.getMonth() + 1}`;
   const filas = hab.map(h => {
-    const id = h.k.slice(6), si = dias.filter(f => regHab(f, id) === 1).length, r = racha(h);
+    const id = h.k.slice(6), si = dias.filter(f => regHab(f, id) === 1).length, r = racha(h), m = metaHab(h), listo = si >= m;
     return `<div class="hg-fila">
-      <button class="hg-n" data-a="editarHabito" data-id="${id}"><span>${esc(h.emoji || '•')}</span><span><b>${esc(h.nombre)}</b><small>${h.tipo === 'dejar' ? 'Dejar' : 'Hacer'} · ${si}/7${r > 1 ? ` · 🔥 ${r} días` : ''}</small></span><i class="lapiz" title="Editar o borrar">✎</i></button>
-      <div class="hg-d">${dias.map(f => { const v = regHab(f, id); return `<button class="${v === 1 ? 'si' : v === 0 ? 'no' : ''} ${f > HOY() ? 'fut' : ''}" data-a="habito" data-id="${id}" data-f="${f}">${v === 1 ? '✓' : v === 0 ? '✗' : ''}</button>`; }).join('')}</div>
+      <button class="hg-n" data-a="editarHabito" data-id="${id}"><span>${esc(h.emoji || '•')}</span><span><b>${esc(h.nombre)}</b><small>${h.tipo === 'dejar' ? 'Dejar' : 'Hacer'} · ${m < 7 ? `${m} días por semana` : 'todos los días'}${r > 1 ? ` · ${ic('racha', 'mini')} ${r} seguidos` : ''}</small></span><span class="meta-p ${listo ? 'listo' : ''}">${listo ? ic('check', 'mini') : ''}${si}/${m}</span><i class="lapiz" title="Editar o borrar">${ic('lapiz')}</i></button>
+      <div class="barra-meta"><i style="width:${Math.min(100, si / m * 100)}%"></i></div>
+      <div class="hg-d">${dias.map(f => { const v = regHab(f, id); return `<button class="${v === 1 ? 'si' : v === 0 ? 'no' : ''} ${f > HOY() ? 'fut' : ''}" data-a="habito" data-id="${id}" data-f="${f}">${v === 1 ? ic('check') : v === 0 ? ic('x') : ''}</button>`; }).join('')}</div>
     </div>`;
   }).join('');
-  const totalSi = hab.reduce((a, h) => a + dias.filter(f => regHab(f, h.k.slice(6)) === 1).length, 0);
-  const posibles = hab.length * dias.filter(f => f <= HOY()).length;
+  const totalSi = hab.reduce((a, h) => a + Math.min(metaHab(h), dias.filter(f => regHab(f, h.k.slice(6)) === 1).length), 0);
+  const posibles = hab.reduce((a, h) => a + metaHab(h), 0);
   return `
   <div class="semana-nav">
     <button class="icon" data-a="semHab" data-n="-7">‹</button><b>Semana del ${titulo}</b><button class="icon" data-a="semHab" data-n="7">›</button>
@@ -710,7 +767,7 @@ function vHabitos() {
     <header><h2>Esta semana</h2><span class="cont">${posibles ? Math.round(totalSi / posibles * 100) : 0}% cumplido</span></header>
     <div class="hg-cab"><span></span><div class="hg-d">${dias.map(f => `<small class="${f === HOY() ? 'hoy' : ''}">${DC[deYmd(f).getDay()][0]}<br>${deYmd(f).getDate()}</small>`).join('')}</div></div>
     ${filas || '<p class="vacio">Sumá tu primer hábito.</p>'}
-    <p class="nota">Tocá un día: ✓ lo cumpliste, otra vez ✗ no, otra vez lo borra. En "dejar" (como no fumar), ✓ es un día sin hacerlo. Para cambiar el nombre o borrar un hábito, tocá el ✎.</p>
+    <p class="nota">Tocá un día: un toque lo marca como hecho, dos como no hecho, tres lo borra. En "dejar" (como no fumar), hecho es un día sin hacerlo. Para cambiar la meta, el nombre o borrarlo, tocá el lápiz.</p>
     <button class="btn ancho" data-a="editarHabito">+ Nuevo hábito</button>
   </section>
   ${vRutinaSemana(dias)}
@@ -765,7 +822,7 @@ function vComidas() {
   <div class="semana-nav">
     <button class="icon" data-a="diaMas" data-n="-1">‹</button><b>${f === HOY() ? 'Hoy, ' : ''}${fechaLarga(f)}</b><button class="icon" data-a="diaMas" data-n="1">›</button>
   </div>
-  <div class="atajos"><button data-a="tab" data-t="plan">🥗 Mi plan y opciones</button><button data-a="tab" data-t="rutina">🗓️ Mi rutina</button></div>
+  <div class="atajos"><button data-a="tab" data-t="plan">${ic('plan')}<span>Mi plan<small>Opciones y porciones</small></span></button><button data-a="tab" data-t="rutina">${ic('rutina')}<span>Mi rutina<small>Tu semana tipo</small></span></button></div>
   <section class="card">${com.map(x => filaComida(f, x)).join('') || '<p class="vacio">No hay comidas en la rutina de este día. Agregalas en Mi rutina.</p>'}</section>
   <details class="card plegable" ${Object.keys(metas()).length || Object.keys(it).length ? 'open' : ''}>
     <summary><h2>Porciones del día</h2><small>Opcional</small></summary>
@@ -963,7 +1020,7 @@ function vAjustes() {
   </section>
   <section class="card">
     <header><h2>Rutina y plan</h2></header>
-    <div class="fila-b"><button class="btn" data-a="tab" data-t="rutina">🗓️ Mi rutina</button><button class="btn" data-a="tab" data-t="plan">🥗 Mi plan</button></div>
+    <div class="fila-b"><button class="btn" data-a="tab" data-t="rutina">${ic('rutina')} Mi rutina</button><button class="btn" data-a="tab" data-t="plan">${ic('plan')} Mi plan</button></div>
     <label class="campo chk"><input type="checkbox" data-a="verRutina" ${c.verRutina === false ? '' : 'checked'}> Mostrar mi rutina en la agenda</label>
     <p class="nota">¿Tenés un .ics de otra persona o una versión vieja? Lo podés cargar directo a Google Calendar.</p>
     <button class="btn" data-a="importar" ${DEMO || S.auth !== 'ok' ? 'disabled' : ''}>Cargar un archivo .ics a Google</button>
@@ -1026,14 +1083,14 @@ function hojaEvento(ev, abrirOtra) {
     <p class="h-s">${fechaCorta(f)} · ${ev.todoDia ? 'Todo el día' : `${hm(ev.ini)} a ${hm(ev.fin)}`}${fuente ? ' · ' + esc(fuente) : ''}</p>
     ${ev.rutina && c && c.variantes.length ? `<h4>Para comer este día</h4><div class="cats">${[{ n: c.plan }, ...c.variantes].filter(o => o.n).map(o => `<button class="${o.n === c.plan ? 'on' : ''}" data-a="planDia" data-v="${esc(o.n)}">${esc(o.n)}</button>`).join('')}</div>` : ''}
     ${c ? `<div class="com-b grande">
-      <button class="${r?.estado === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${c.tipo}">✓ La hice</button>
-      <button class="${r?.estado === 'cambio' ? 'on' : ''}" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}" data-cambio="1">↺ Cambié</button>
-      <button class="${r?.estado === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${c.tipo}">✗ No</button></div>` : ''}
+      <button class="${r?.estado === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${c.tipo}">${ic('check')} La hice</button>
+      <button class="${r?.estado === 'cambio' ? 'on' : ''}" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}" data-cambio="1">${ic('cambio')} Cambié</button>
+      <button class="${r?.estado === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${c.tipo}">${ic('x')} No</button></div>` : ''}
     ${seRegistra(ev) && (yaEmpezo || ra) ? `<h4>¿Cómo te fue?</h4>
     <div class="com-b grande">
-      <button class="${ra?.estado === 'ok' ? 'on' : ''}" data-a="act" data-est="ok" data-id="${esc(ev.id)}">✓ A horario</button>
-      <button class="${ra?.estado === 'otra' || abrirOtra ? 'on' : ''}" data-a="mostrarOtra">🕒 Otra hora</button>
-      <button class="${ra?.estado === 'no' ? 'on' : ''}" data-a="act" data-est="no" data-id="${esc(ev.id)}">✗ No</button></div>
+      <button class="${ra?.estado === 'ok' ? 'on' : ''}" data-a="act" data-est="ok" data-id="${esc(ev.id)}">${ic('check')} A horario</button>
+      <button class="${ra?.estado === 'otra' || abrirOtra ? 'on' : ''}" data-a="mostrarOtra">${ic('reloj')} Otra hora</button>
+      <button class="${ra?.estado === 'no' ? 'on' : ''}" data-a="act" data-est="no" data-id="${esc(ev.id)}">${ic('x')} No</button></div>
     <div id="otra" class="fila-b" ${ra?.estado === 'otra' || abrirOtra ? '' : 'hidden'}>
       <span class="nota">¿A qué hora fuiste?</span><input id="ot-h" class="in" type="time" value="${ra?.hora || hm(ev.ini)}">
       <button class="btn prim" data-a="guardarOtra" data-id="${esc(ev.id)}">Guardar</button></div>` : ''}
@@ -1051,13 +1108,13 @@ function hojaComida(f, tipo, abrirCambio) {
   const c = comidasDelDia(f).find(x => x.tipo === tipo) || { tipo, plan: '', variantes: plan().opciones[tipo] || [], hora: '' };
   const r = regComida(f, tipo), info = COMIDAS.find(x => x[0] === tipo);
   hoja(`
-    <h3>${info[2]} ${info[1]} · ${fechaCorta(f)}</h3>
+    <h3 class="h-ic"><span class="e m-${tipo}">${ic(info[2])}</span>${info[1]} · ${fechaCorta(f)}</h3>
     <p class="h-s">Plan: <b>${esc(c.plan)}</b></p>
     ${c.detalle ? `<div class="desc">${esc(c.detalle)}</div>` : ''}
     <div class="com-b grande">
-      <button class="${r?.estado === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${tipo}">✓ La hice</button>
-      <button class="${r?.estado === 'cambio' || abrirCambio ? 'on' : ''}" data-a="mostrarCambio">↺ Cambié</button>
-      <button class="${r?.estado === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${tipo}">✗ No</button>
+      <button class="${r?.estado === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${tipo}">${ic('check')} La hice</button>
+      <button class="${r?.estado === 'cambio' || abrirCambio ? 'on' : ''}" data-a="mostrarCambio">${ic('cambio')} Cambié</button>
+      <button class="${r?.estado === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${tipo}">${ic('x')} No</button>
     </div>
     <div id="cambio" ${r?.estado === 'cambio' || abrirCambio || r?.estado === 'no' ? '' : 'hidden'}>
       <h4>¿Qué comiste?</h4>
@@ -1100,9 +1157,11 @@ function hojaHabito(id) {
     <h3>${h ? 'Editar hábito' : 'Nuevo hábito'}</h3>
     <div class="seg"><button class="${h?.tipo !== 'dejar' ? 'on' : ''}" data-a="habTipo" data-t="hacer">Quiero hacerlo</button><button class="${h?.tipo === 'dejar' ? 'on' : ''}" data-a="habTipo" data-t="dejar">Quiero dejarlo</button></div>
     <div class="fila-b"><input id="hb-e" class="in emoji" value="${esc(h?.emoji || '✨')}" maxlength="4"><input id="hb-n" class="in" placeholder="Ej: Leer 20 minutos" value="${esc(h?.nombre || '')}"></div>
+    <h4>¿Cuántos días por semana?</h4>
+    <div class="cats dias-meta">${[1, 2, 3, 4, 5, 6, 7].map(n => `<button class="${(h?.meta || 7) === n ? 'on' : ''}" data-a="habMeta" data-n="${n}">${n === 7 ? 'Todos' : n}</button>`).join('')}</div>
     <div class="fila-b">${h ? `<button class="btn peligro" data-a="borrarHabito" data-id="${id}">Borrar</button>` : ''}<button class="btn prim grande" data-a="guardarHabito" data-id="${id || ''}">Guardar</button></div>`,
     o => !h && setTimeout(() => $('#hb-n', o)?.focus(), 250));
-  $('#hoja').dataset.tipo = h?.tipo || 'hacer';
+  $('#hoja').dataset.tipo = h?.tipo || 'hacer'; $('#hoja').dataset.meta = h?.meta || 7;
 }
 const CAMPOS_MED = [['peso', 'Peso (kg)'], ['grasa', '% de grasa'], ['musculo', 'Masa muscular (kg)'], ['cintura', 'Cintura (cm)'], ['pliegues', 'Suma 6 pliegues (mm)'], ['grasaKg', 'Masa adiposa (kg)']];
 function hojaMedida(f) {
@@ -1144,7 +1203,7 @@ function hojaTarea(id, conAviso) {
     <h4>¿Para cuándo?</h4>
     <div class="cats" id="ta-dias">${[['', 'Sin fecha'], [HOY(), 'Hoy'], [man, 'Mañana']].map(([v, n]) => `<button class="${f === v ? 'on' : ''}" data-a="taDia" data-v="${v}">${n}</button>`).join('')}</div>
     <div class="fila-b"><input id="ta-f" class="in" type="date" value="${f}"><input id="ta-h" class="in" type="time" value="${t?.hora || ''}"></div>
-    <label class="campo chk"><input type="checkbox" id="ta-av" ${aviso ? 'checked' : ''}> 🔔 Avisarme en el celu a esa hora</label>
+    <label class="campo chk"><input type="checkbox" id="ta-av" ${aviso ? 'checked' : ''}> Avisarme en el celu a esa hora</label>
     <p class="nota">El aviso se crea como evento en tu Google Calendar, así te suena aunque la app esté cerrada. Necesita fecha y hora.</p>
     <div class="fila-b">${t ? `<button class="btn peligro" data-a="borrarTarea" data-id="${id}">Borrar</button>` : ''}<button class="btn prim grande" data-a="guardarTarea" data-id="${id || ''}">Guardar</button></div>`,
     o => !t && setTimeout(() => $('#ta-t', o)?.focus(), 250));
@@ -1152,7 +1211,7 @@ function hojaTarea(id, conAviso) {
 function hojaOpcion(tipo, i) {
   const op = i != null ? plan().opciones[tipo][+i] : null, info = COMIDAS.find(c => c[0] === tipo);
   hoja(`
-    <h3>${info[2]} ${op ? 'Editar opción' : 'Nueva opción'} de ${info[1].toLowerCase()}</h3>
+    <h3>${op ? 'Editar opción' : 'Nueva opción'} de ${info[1].toLowerCase()}</h3>
     <input id="op-n" class="in" placeholder="Nombre corto. Ej: Tostada con huevos" value="${esc(op?.n || '')}">
     <textarea id="op-d" class="in" rows="4" placeholder="Qué lleva y cuánto. Ej: 1 tostada integral + 2 huevos + café con leche">${esc(op?.d || '')}</textarea>
     <div class="fila-b">${op ? `<button class="btn peligro" data-a="borrarOpcion" data-tipo="${tipo}" data-i="${i}">Borrar</button>` : ''}<button class="btn prim grande" data-a="guardarOpcion" data-tipo="${tipo}" data-i="${i ?? ''}">Guardar</button></div>`,
@@ -1268,11 +1327,12 @@ const A = {
 
   habito(b) { ciclarHabito(b.dataset.f, b.dataset.id); if (navigator.vibrate) navigator.vibrate(8); render(); },
   editarHabito(b) { hojaHabito(b.dataset.id); },
+  habMeta(b) { $('#hoja').dataset.meta = b.dataset.n; b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); },
   habTipo(b) { $('#hoja').dataset.tipo = b.dataset.t; b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); },
   guardarHabito(b) {
     const nombre = $('#hb-n').value.trim(); if (!nombre) return aviso('Ponele un nombre.');
     const id = b.dataset.id || uid(), ya = rec('habit:' + id);
-    poner('habit:' + id, { nombre, emoji: $('#hb-e').value.trim() || '•', tipo: $('#hoja').dataset.tipo, orden: ya?.orden ?? habitos().length });
+    poner('habit:' + id, { ...(ya || {}), nombre, emoji: $('#hb-e').value.trim() || '•', tipo: $('#hoja').dataset.tipo, meta: +$('#hoja').dataset.meta || 7, orden: ya?.orden ?? habitos().length });
     cerrar(); render();
   },
   borrarHabito(b) { if (confirm('¿Borrar este hábito? Se pierde su historial.')) { borrar('habit:' + b.dataset.id); cerrar(); render(); } },
@@ -1533,10 +1593,10 @@ $('#fab').addEventListener('click', () => {
   if (S.tab === 'agenda') return A.nuevoEvento();
   if (S.tab === 'plata') return hojaMov('gasto');
   hoja(`<h3>¿Qué querés cargar?</h3><div class="menu-r">
-    <button data-a="nuevoMov" data-t="gasto"><span>💸</span>Gasto</button><button data-a="nuevoMov" data-t="ingreso"><span>💰</span>Ingreso</button>
-    <button data-a="nuevoMov" data-t="inversion"><span>📈</span>Inversión</button><button data-a="nuevoEvento"><span>📅</span>Reunión</button>
-    <button data-a="nuevaPantalla"><span>📱</span>Pantalla</button><button data-a="editarHabito"><span>✨</span>Hábito</button>
-    <button data-a="editarTarea"><span>✅</span>Tarea</button><button data-a="editarTarea" data-aviso="1"><span>🔔</span>Recordatorio</button></div>`);
+    <button class="t-gasto" data-a="nuevoMov" data-t="gasto"><span>${ic('gasto')}</span>Gasto</button><button class="t-ingreso" data-a="nuevoMov" data-t="ingreso"><span>${ic('ingreso')}</span>Ingreso</button>
+    <button class="t-inversion" data-a="nuevoMov" data-t="inversion"><span>${ic('inversion')}</span>Inversión</button><button class="t-reunion" data-a="nuevoEvento"><span>${ic('calPlus')}</span>Reunión</button>
+    <button class="t-tarea" data-a="editarTarea"><span>${ic('tarea')}</span>Tarea</button><button class="t-aviso" data-a="editarTarea" data-aviso="1"><span>${ic('aviso')}</span>Recordatorio</button>
+    <button class="t-habito" data-a="editarHabito"><span>${ic('habito')}</span>Hábito</button><button class="t-pantalla" data-a="nuevaPantalla"><span>${ic('pantalla')}</span>Pantalla</button></div>`);
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
@@ -1551,4 +1611,6 @@ if (QS.get('tab')) S.tab = QS.get('tab');
 if (DEMO) cargarCalendarios();
 render();
 if (S.auth === 'ok') { cargarCalendarios().then(() => { asegurarSemana(HOY(), true); }); sincronizar(); }
+// Le pedimos al navegador que no borre los datos guardados aunque falte espacio.
+navigator.storage?.persist?.().catch(() => { });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => { });
