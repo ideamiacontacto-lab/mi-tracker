@@ -100,7 +100,7 @@ function rutinaDelDia(f) {
     const op = r.comida ? opcion(r.comida, pl) : null;
     out.push({
       id: `r:${f}:${id}`, rid: id, calId: 'rutina', rutina: true, titulo: r.t, ini, fin, todoDia: false, color: '#0d9488',
-      serie: 'rutina', comida: r.comida || null, plan: pl, cambiado: !!(o && !o.oculto),
+      serie: 'rutina', comida: r.comida || null, plan: pl, cambiado: !!(o && !o.oculto), marcar: r.marcar !== false,
       desc: r.comida ? [pl, op?.d].filter(Boolean).join(': ') : (r.detalle || ''), link: ''
     });
   });
@@ -380,6 +380,70 @@ function marcarComida(fecha, c, estado, extra = {}) {
   poner(k, { ...(ya || {}), estado, plan: c.plan, hora: c.hora, ...extra });
 }
 
+/* ---------- Porciones: objetivo por comida y evaluación ----------
+   Cada comida del plan trae sus intercambios. Una opción sin porciones cargadas
+   se toma como "en plan" (todas las del plan de la nutri cumplen su comida). */
+const OBJ_COMIDA_DEF = {
+  desayuno: { alm: 1, fru: 1, lac: 1, car: 3, gra: 1 },
+  almuerzo: { alm: 2, ver: 2, car: 3, gra: 2, fru: 1 },
+  merienda: { alm: 2, fru: 1, lac: 1, car: 2, gra: 2 },
+  cena: { alm: 1, ver: 2, car: 4, gra: 3 }
+};
+const SING = { alm: 'almidón', car: 'carne', ver: 'verdura', fru: 'fruta', lac: 'lácteo', gra: 'grasa' };
+const PLUR = { alm: 'almidones', car: 'carnes', ver: 'verduras', fru: 'frutas', lac: 'lácteos', gra: 'grasas' };
+const objComida = t => ({ ...(OBJ_COMIDA_DEF[t] || {}), ...(plan().objComida?.[t] || {}) });
+const esLibre = n => /libre/i.test(n || '');
+function porcOpcion(t, n) {
+  if (!n || esLibre(n)) return null;
+  const o = opcion(t, n);
+  return o?.x ? { ...o.x } : objComida(t);
+}
+function porcComida(f, t) {
+  const r = regComida(f, t); if (!r) return null;
+  if (r.estado === 'no') return {};
+  if (r.x) return r.x;
+  return porcOpcion(t, r.estado === 'ok' ? r.plan : r.variante);
+}
+const txtPorc = o => GRUPOS.filter(([g]) => o[g]).map(([g]) => `${o[g]} ${o[g] === 1 ? SING[g] : PLUR[g]}`).join(', ');
+function compararPorc(x, obj) {
+  const falta = {}, sobra = {}; let dif = 0;
+  GRUPOS.forEach(([g]) => { const d = (x[g] || 0) - (obj[g] || 0); if (d < 0) falta[g] = -d; if (d > 0) sobra[g] = d; dif += Math.abs(d); });
+  return { falta, sobra, dif };
+}
+// est: bien | cerca | fuera | no | libre | sin (cambió sin decir qué)
+function evalComida(f, t) {
+  const r = regComida(f, t); if (!r) return null;
+  if (r.estado === 'no') return { est: 'no', falta: objComida(t), sobra: {}, dif: 9 };
+  const x = porcComida(f, t);
+  if (!x) return { est: esLibre(r.plan) || esLibre(r.variante) ? 'libre' : 'sin', falta: {}, sobra: {}, dif: 0 };
+  const c = compararPorc(x, objComida(t));
+  return { ...c, x, est: c.dif === 0 ? 'bien' : c.dif <= 1 ? 'cerca' : 'fuera' };
+}
+function fraseEval(e) {
+  if (!e) return '';
+  if (e.est === 'bien') return 'En plan';
+  if (e.est === 'no') return 'No la comiste';
+  if (e.est === 'libre') return 'Comida libre';
+  if (e.est === 'sin') return 'Cambiaste, sin porciones';
+  return [txtPorc(e.falta) && 'Faltó ' + txtPorc(e.falta), txtPorc(e.sobra) && 'sobró ' + txtPorc(e.sobra)].filter(Boolean).join(' · ').replace(/^./, m => m.toUpperCase());
+}
+// Día: lo comido contra lo que pedía el plan en las comidas que ya pasaron o marcaste
+function evalDia(f) {
+  const com = comidasDelDia(f), ahora = new Date();
+  const obj = {}, comido = {}; let marcadas = 0, bien = 0, pasadas = 0;
+  com.forEach(c => {
+    const r = regComida(f, c.tipo), yaPaso = f < HOY() || (f === HOY() && conHora(f, c.hora || '00:00') <= ahora);
+    if (yaPaso || r) pasadas++;
+    if (!r) return;
+    const o = objComida(c.tipo); GRUPOS.forEach(([g]) => obj[g] = (obj[g] || 0) + (o[g] || 0));
+    marcadas++;
+    const e = evalComida(f, c.tipo); if (e.est === 'bien' || e.est === 'libre') bien++;
+    const x = e.x || (e.est === 'libre' || e.est === 'sin' ? o : {});
+    GRUPOS.forEach(([g]) => comido[g] = (comido[g] || 0) + (x[g] || 0));
+  });
+  return { total: com.length, pasadas, marcadas, bien, obj, comido, ...compararPorc(comido, obj) };
+}
+
 /* ---------- Hábitos ---------- */
 const habitos = () => todos('habit:').sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0));
 const regHab = (fecha, id) => rec(`hl:${fecha}:${id}`)?.v;
@@ -425,7 +489,7 @@ async function avisoTarea(t, id) {
 const slug = t => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const claveAct = ev => `act:${ymd(ev.ini)}:${slug(ev.titulo)}`;
 const regAct = ev => rec(claveAct(ev)) || rec(`act:${ymd(ev.ini)}:${ev.id}`);
-const seRegistra = ev => !ev.todoDia && !esComida(ev);
+const seRegistra = ev => !ev.todoDia && !esComida(ev) && ev.marcar !== false;
 function marcarAct(ev, estado, hora) {
   const k = claveAct(ev), ya = regAct(ev);
   if (ya && ya.k !== k) borrar(ya.k);
@@ -593,15 +657,15 @@ const anillo = (hechos, total, color, etiqueta) => {
   const p = total ? Math.min(1, hechos / total) : 0, L = 2 * Math.PI * 16;
   return `<div class="anillo" style="--c:${color}"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" class="fondo-a"/>${p ? `<circle cx="20" cy="20" r="16" class="arco" stroke-dasharray="${(p * L).toFixed(1)} ${L.toFixed(1)}"/>` : ''}</svg><b>${hechos}<small>/${total}</small></b><span>${etiqueta}</span></div>`;
 };
-const TABS = [['hoy', 'Hoy'], ['agenda', 'Agenda'], ['habitos', 'Hábitos'], ['comidas', 'Comidas'], ['plata', 'Plata']];
+const TABS = [['hoy', 'Hoy'], ['agenda', 'Agenda'], ['comidas', 'Comidas'], ['+', ''], ['habitos', 'Hábitos'], ['plata', 'Plata']];
 const icono = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
 
 function render() {
   const v = { hoy: vHoy, agenda: vAgenda, habitos: vHabitos, comidas: vComidas, plata: vPlata, ajustes: vAjustes, rutina: vRutina, plan: vPlan }[S.tab] || vHoy;
   $('#vista').innerHTML = bannerAuth() + v();
-  $('#nav').innerHTML = TABS.map(([id, t]) => `<button class="${S.tab === id || (id === 'comidas' && S.tab === 'plan') || (id === 'agenda' && S.tab === 'rutina') ? 'on' : ''}" data-a="tab" data-t="${id}">${ic(id)}<span>${t}</span></button>`).join('');
-  $('#titulo').textContent = { hoy: 'Hoy', agenda: 'Agenda', habitos: 'Hábitos', comidas: 'Comidas', plata: 'Plata', ajustes: 'Ajustes', rutina: 'Mi rutina', plan: 'Mi plan' }[S.tab];
-  $('#fab').hidden = !['hoy', 'plata', 'agenda'].includes(S.tab);
+  $('#nav').innerHTML = TABS.map(([id, t]) => id === '+' ? `<button class="nav-mas" data-a="cargar" aria-label="Cargar algo"><span>+</span></button>` : `<button class="${S.tab === id || (id === 'comidas' && S.tab === 'plan') || (id === 'agenda' && S.tab === 'rutina') ? 'on' : ''}" data-a="tab" data-t="${id}">${ic(id)}<span>${t}</span></button>`).join('');
+  $('#titulo').textContent = { hoy: '', agenda: 'Agenda', habitos: 'Hábitos', comidas: 'Comidas', plata: 'Plata', ajustes: 'Ajustes', rutina: 'Mi rutina', plan: 'Mi plan' }[S.tab];
+  $('#fab').hidden = true;
   pintarEstado();
 }
 function pintarEstado() {
@@ -620,68 +684,74 @@ function bannerAuth() {
 }
 
 /* --- Hoy --- */
+// Lo pendiente de marcar hoy: actividades de la rutina y comidas que ya pasaron
+function pendientesHoy(f = HOY()) {
+  const ahora = new Date(), evs = eventosDelDia(f) || [];
+  const act = evs.filter(e => seRegistra(e) && e.ini <= ahora && !regAct(e)).map(e => ({ tipo: 'ev', e, t: e.ini }));
+  const com = comidasDelDia(f).filter(c => !regComida(f, c.tipo) && conHora(f, c.hora || '00:00') <= ahora).map(c => ({ tipo: 'com', c, t: conHora(f, c.hora) }));
+  return [...act, ...com].sort((a, b) => a.t - b.t);
+}
+function filaPendiente(f, p) {
+  if (p.tipo === 'com') return filaComida(f, p.c);
+  const e = p.e;
+  return `<div class="com">
+    <button class="com-t" data-a="verEvento" data-id="${esc(e.id)}"><span class="e m-ev">${ic('reloj')}</span><span class="com-tx"><b>${esc(e.titulo)}<small>${hm(e.ini)}</small></b></span></button>
+    <div class="com-b">
+      <button data-a="act" data-est="ok" data-id="${esc(e.id)}" aria-label="Lo hice">${ic('check')}</button>
+      <button data-a="verEvento" data-id="${esc(e.id)}" data-otra="1" aria-label="A otra hora">${ic('reloj')}</button>
+      <button data-a="act" data-est="no" data-id="${esc(e.id)}" aria-label="No lo hice">${ic('x')}</button>
+    </div></div>`;
+}
 function vHoy() {
   const f = HOY(); asegurarSemana(f);
-  const ahora = new Date(), evs = eventosDelDia(f);
-  const saludo = ahora.getHours() < 13 ? 'Buen día' : ahora.getHours() < 20 ? 'Buenas tardes' : 'Buenas noches';
-  const prox = (evs || []).filter(e => !e.todoDia && e.fin > ahora).slice(0, 4);
-  const mes = movsDelMes(f.slice(0, 7));
-  const gHoy = mes.filter(m => m.fecha === f && m.tipo === 'gasto');
-  const hab = habitos();
-  const hechos = hab.filter(h => regHab(f, h.k.slice(6)) === 1).length;
-  const com = comidasDelDia(f);
-  const comOk = com.filter(c => regComida(f, c.tipo)).length;
-  const pasados = (evs || []).filter(e => seRegistra(e) && e.ini <= ahora && !regAct(e));
+  const ahora = new Date(), evs = eventosDelDia(f) || [], h = ahora.getHours();
+  const nombre = cfg().nombre ? ', ' + cfg().nombre : '';
+  const saludo = h < 6 ? 'Buenas noches' : h < 13 ? 'Buen día' : h < 20 ? 'Buenas tardes' : 'Buenas noches';
+  const hab = habitos(), habOk = hab.filter(x => regHab(f, x.k.slice(6)) === 1).length;
+  const com = comidasDelDia(f), regs = evs.filter(seRegistra);
+  const total = regs.length + com.length, hechos = regs.filter(e => regAct(e)).length + com.filter(c => regComida(f, c.tipo)).length;
+  const pct = total ? Math.round(hechos / total * 100) : 0;
+  const d = evalDia(f), pend = pendientesHoy(f);
+  const enCurso = evs.find(e => !e.todoDia && e.ini <= ahora && e.fin > ahora);
+  const prox = evs.filter(e => !e.todoDia && e.ini > ahora);
+  const foco = enCurso || prox[0];
+  const despues = prox.filter(e => e !== foco).slice(0, 3);
+  const mes = movsDelMes(f.slice(0, 7)), gHoy = mes.filter(m => m.fecha === f && m.tipo === 'gasto');
   const sinDatos = !DEMO && !todos('rut:').length && !todos('plan:').length;
+  const faltaTxt = txtPorc(d.falta);
   return `
-  <section class="hola"><p>${fechaLarga(f).replace(/^./, x => x.toUpperCase())}</p><h1>${saludo}</h1></section>
-  <section class="card resumen">
-    ${anillo(hechos, hab.length, 'var(--c-hab)', 'Hábitos')}
-    ${anillo(comOk, com.length, 'var(--c-com)', 'Comidas')}
-    ${anillo(tareasHoy().filter(t => t.hecha).length, tareasHoy().length, 'var(--c-tar)', 'Tareas')}
+  <section class="hola"><p>${fechaLarga(f).replace(/^./, x => x.toUpperCase())}</p><h1>${saludo}${esc(nombre)}</h1></section>
+  ${sinDatos ? `<div class="banner"><div><b>Cargá tu rutina y tu plan</b><br>Elegí el archivo <i>mi-tracker-datos.json</i>. Es una sola vez.</div><button class="btn prim" data-a="restaurar">Cargar archivo</button></div>` : ''}
+  <section class="card dia">
+    <div class="dia-top"><div><small>Tu día</small><b>${pct}<span>%</span></b></div><p>${hechos} de ${total} marcadas${pend.length ? ` · <span class="rojo">${pend.length} sin marcar</span>` : ''}</p></div>
+    <div class="barra-dia"><i style="width:${pct}%"></i></div>
+    <div class="mini3">
+      <button data-a="tab" data-t="comidas"><small>En plan</small><b>${d.bien}<span>/${d.marcadas || 0}</span></b></button>
+      <button data-a="tab" data-t="habitos"><small>Hábitos</small><b>${habOk}<span>/${hab.length}</span></b></button>
+      <button data-a="tab" data-t="comidas"><small>Porciones</small><b class="${d.marcadas ? (d.dif === 0 ? 'verde' : d.dif <= 2 ? 'amarillo' : 'rojo') : ''}">${!d.marcadas ? '–' : d.dif === 0 ? 'Bien' : faltaTxt ? 'Faltan' : 'De más'}</b></button>
+    </div>
+    ${d.marcadas && d.dif ? `<p class="dia-nota">${faltaTxt ? 'En lo que comiste te faltan ' + faltaTxt : ''}${faltaTxt && txtPorc(d.sobra) ? ' · ' : ''}${txtPorc(d.sobra) ? 'te sobran ' + txtPorc(d.sobra) : ''}.</p>` : ''}
   </section>
-  ${sinDatos ? `<div class="banner"><div><b>Cargá tu rutina, tu plan y tus medidas</b><br>Elegí el archivo <i>mi-tracker-datos.json</i> que te dejó Claude en Descargas. Es una sola vez: después viaja solo por tu Drive al celu.</div><button class="btn prim" data-a="restaurar">Cargar archivo</button></div>` : ''}
-  <div class="rapidos">
-    <button class="t-gasto" data-a="nuevoMov" data-t="gasto"><span>${ic('gasto')}</span>Gasto</button>
-    <button class="t-ingreso" data-a="nuevoMov" data-t="ingreso"><span>${ic('ingreso')}</span>Ingreso</button>
-    <button class="t-reunion" data-a="nuevoEvento"><span>${ic('calPlus')}</span>Reunión</button>
-    <button class="t-tarea" data-a="editarTarea"><span>${ic('tarea')}</span>Tarea</button>
-  </div>
+  ${pend.length ? `<section class="card pend">
+    <header><h2>Para marcar <span class="n">${pend.length}</span></h2>${pend.length > 1 ? `<button class="btn mini ok" data-a="todoBien">${ic('check')}Todo como el plan</button>` : ''}</header>
+    ${pend.map(p => filaPendiente(f, p)).join('')}
+  </section>` : (total && hechos === total ? `<section class="card listo"><b>${ic('check')} Día al día</b><span>Marcaste todo. Así se hace.</span></section>` : '')}
+  ${foco ? `<section class="card foco" style="--c:${foco.color || 'var(--acc)'}">
+    <small>${foco === enCurso ? 'Ahora' : 'Lo que sigue · ' + (Math.round((foco.ini - ahora) / 60000) < 120 ? 'en ' + durTxt(Math.round((foco.ini - ahora) / 60000)) : hm(foco.ini))}</small>
+    <button class="foco-t" data-a="verEvento" data-id="${esc(foco.id)}"><b>${esc(foco.titulo)}</b><span>${hm(foco.ini)} a ${hm(foco.fin)}${foco.desc ? ' · ' + esc(foco.desc.split('\n')[0].replace(/^HOY:\s*/, '').slice(0, 80)) : ''}</span></button>
+    ${despues.length ? `<div class="despues">${despues.map(e => `<button data-a="verEvento" data-id="${esc(e.id)}"><span>${hm(e.ini)}</span>${esc(e.titulo)}</button>`).join('')}</div>` : ''}
+  </section>` : ''}
   <section class="card">
-    <header><h2>Lo que sigue</h2><button class="link" data-a="tab" data-t="agenda">Agenda →</button></header>
-    ${prox.length ? prox.map((e, i) => filaEvento(e, i === 0)).join('') : (cargandoSemana(f) ? '<p class="vacio">Cargando agenda…</p>' : '<p class="vacio">No queda nada en la agenda de hoy.</p>')}
+    <header><h2>Hábitos</h2><span class="cont">${habOk}/${hab.length}</span></header>
+    <div class="chips-hab">${hab.map(x => chipHabito(f, x)).join('')}<button class="hab nuevo" data-a="editarHabito">+</button></div>
   </section>
   <section class="card">
     <header><h2>Tareas</h2><span class="cont">${tareasHoy().filter(t => t.hecha).length}/${tareasHoy().length}</span></header>
-    <form class="tq" data-form="tareaRapida"><input id="tq" class="in" placeholder="Anotá algo para hacer y tocá Enter" autocomplete="off"><button type="button" class="btn" data-a="editarTarea" title="Con fecha, hora o aviso">🔔</button></form>
+    <form class="tq" data-form="tareaRapida"><input id="tq" class="in" placeholder="Anotá algo y Enter" autocomplete="off"><button type="button" class="icon" data-a="editarTarea" aria-label="Con fecha o aviso">${ic('aviso')}</button></form>
     ${tareasHoy().map(filaTarea).join('')}
     ${tareasDespues().length ? `<details class="ayuda"><summary>${tareasDespues().length} para más adelante</summary>${tareasDespues().map(filaTarea).join('')}</details>` : ''}
   </section>
-  ${pasados.length ? `<section class="card">
-    <header><h2>¿Cómo te fue?</h2><span class="cont">${pasados.length} sin marcar</span></header>
-    ${pasados.map(e => `<div class="com">
-      <button class="com-t" data-a="verEvento" data-id="${esc(e.id)}"><span class="e m-ev">${ic('agenda')}</span><span><b>${esc(e.titulo)}</b><br><span class="sub">Planeado ${hm(e.ini)}</span></span></button>
-      <div class="com-b">
-        <button data-a="act" data-est="ok" data-id="${esc(e.id)}" title="Lo hice a horario">${ic('check')}</button>
-        <button data-a="verEvento" data-id="${esc(e.id)}" data-otra="1" title="Lo hice a otra hora">${ic('reloj')}</button>
-        <button data-a="act" data-est="no" data-id="${esc(e.id)}" title="No lo hice">${ic('x')}</button>
-      </div></div>`).join('')}
-  </section>` : ''}
-  <section class="card">
-    <header><h2>Hábitos de hoy</h2><span class="cont">${hechos}/${hab.length}</span></header>
-    <div class="chips-hab">${hab.map(h => chipHabito(f, h)).join('')}<button class="hab nuevo" data-a="editarHabito">+ Hábito</button></div>
-  </section>
-  <section class="card">
-    <header><h2>Comidas</h2><span class="cont">${comOk}/${com.length}</span></header>
-    ${com.map(c => filaComida(f, c)).join('')}
-  </section>
-  <section class="card">
-    <header><h2>Plata ${ojo()}</h2><button class="link" data-a="tab" data-t="plata">Ver mes →</button></header>
-    <div class="dupla">
-      <div><small>Gastaste hoy</small><b>${totalesTxt(gHoy)}</b></div>
-      <div><small>Gastos de ${MESES[+f.slice(5, 7) - 1]}</small><b>${totalesTxt(mes.filter(m => m.tipo === 'gasto'))}</b></div>
-    </div>
-  </section>`;
+  <div class="card plata-mini" data-a="tab" data-t="plata"><span>Gastaste hoy ${ojo()}</span><b>${totalesTxt(gHoy)}</b><small>En ${MESES[+f.slice(5, 7) - 1]}: ${totalesTxt(mes.filter(m => m.tipo === 'gasto'))}</small></div>`;
 }
 function totalesTxt(movs) {
   const t = { ARS: 0, USD: 0 }; movs.forEach(m => t[m.moneda] += m.monto);
@@ -702,15 +772,14 @@ function chipHabito(f, h) {
   return `<button class="hab ${cls}" data-a="habito" data-id="${h.k.slice(6)}" data-f="${f}"><span class="he">${esc(h.emoji || '•')}</span><span class="hn">${esc(h.nombre)}${m < 7 ? `<small>${n}/${m} esta semana</small>` : ''}</span><i>${v === 1 ? ic('check') : v === 0 ? ic('x') : ''}</i></button>`;
 }
 function filaComida(f, c) {
-  const r = regComida(f, c.tipo), info = COMIDAS.find(x => x[0] === c.tipo);
-  const est = r?.estado;
-  const sub = est === 'cambio' ? '↺ ' + ([r.variante, r.nota].filter(Boolean).join(' · ') || 'Con cambios') : est === 'no' ? 'No la hice' + (r.nota ? ' · ' + r.nota : '') : c.plan;
+  const r = regComida(f, c.tipo), info = COMIDAS.find(x => x[0] === c.tipo), est = r?.estado, ev = evalComida(f, c.tipo);
+  const que = est === 'cambio' ? (r.variante || r.nota || 'Otra cosa') : c.plan;
   return `<div class="com ${est || ''}">
-    <button class="com-t" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}"><span class="e m-${c.tipo}">${ic(info[2])}</span><span><b>${info[1]}</b> <small>${c.hora}</small><br><span class="sub">${esc(sub)}</span></span></button>
+    <button class="com-t" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}"><span class="e m-${c.tipo}">${ic(info[2])}</span><span class="com-tx"><b>${info[1]}<small>${c.hora}</small></b><span class="sub">${esc(que)}</span>${ev && ev.est !== 'no' ? `<em class="ver v-${ev.est}">${ev.est === 'bien' ? 'En plan' : ev.est === 'cerca' ? 'Casi: ' + esc(fraseEval(ev).toLowerCase()) : ESTADOS[ev.est]}</em>` : ''}</span></button>
     <div class="com-b">
-      <button class="${est === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${c.tipo}" title="La hice">${ic('check')}</button>
-      <button class="${est === 'cambio' ? 'on' : ''}" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}" data-cambio="1" title="Comí otra cosa">${ic('cambio')}</button>
-      <button class="${est === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${c.tipo}" title="No la hice">${ic('x')}</button>
+      <button class="${est === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${c.tipo}" aria-label="Como el plan">${ic('check')}</button>
+      <button class="${est === 'cambio' ? 'on' : ''}" data-a="verComida" data-f="${f}" data-tipo="${c.tipo}" data-cambio="1" aria-label="Comí otra cosa">${ic('cambio')}</button>
+      <button class="${est === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${c.tipo}" aria-label="No comí">${ic('x')}</button>
     </div></div>`;
 }
 
@@ -824,20 +893,23 @@ function vComidas() {
   </div>
   <div class="atajos"><button data-a="tab" data-t="plan">${ic('plan')}<span>Mi plan<small>Opciones y porciones</small></span></button><button data-a="tab" data-t="rutina">${ic('rutina')}<span>Mi rutina<small>Tu semana tipo</small></span></button></div>
   <section class="card">${com.map(x => filaComida(f, x)).join('') || '<p class="vacio">No hay comidas en la rutina de este día. Agregalas en Mi rutina.</p>'}</section>
-  <details class="card plegable" ${Object.keys(metas()).length || Object.keys(it).length ? 'open' : ''}>
-    <summary><h2>Porciones del día</h2><small>Opcional</small></summary>
-    <p class="nota">La nutri te dio una cantidad de porciones por grupo para cumplir en el día ("intercambios"). Por ejemplo, 1 huevo = 1 porción de carnes; un scoop o una milanesa = 3. Si querés controlarlo, sumá acá lo que vas comiendo. Si con marcar las comidas te alcanza, ignorá esta parte.</p>
-    <button class="link" data-a="metas">Cargar cuántas porciones te tocan por día</button>
-    <div class="inter">${GRUPOS.map(([g, n]) => {
-      const v = it[g] || 0, m = metas()[g];
-      return `<div class="${m && v >= m ? 'listo' : ''}"><span>${n}</span><div><button data-a="inter" data-g="${g}" data-n="-1">−</button><b>${v}${m ? `<small>/${m}</small>` : ''}</b><button data-a="inter" data-g="${g}" data-n="1">+</button></div></div>`;
-    }).join('')}</div>
-  </details>
+  ${(() => {
+    const d = evalDia(f);
+    if (!d.marcadas) return '';
+    return `<section class="card">
+      <header><h2>Porciones del día</h2><span class="cont">${d.dif === 0 ? 'En plan' : 'Hasta ahora'}</span></header>
+      <div class="porc-dia">${GRUPOS.filter(([g]) => d.obj[g] || d.comido[g]).map(([g, n]) => {
+        const v = d.comido[g] || 0, m = d.obj[g] || 0;
+        return `<div class="${v === m ? 'ok' : v < m ? 'menos' : 'mas'}"><span>${n}</span><b>${v}<small>/${m}</small></b><i style="--p:${m ? Math.min(100, v / m * 100) : 100}%"></i></div>`;
+      }).join('')}</div>
+      <p class="veredicto v-${d.dif === 0 ? 'bien' : d.dif <= 2 ? 'cerca' : 'fuera'}">${d.dif === 0 ? 'Vas justo con lo que pide el plan.' : [txtPorc(d.falta) && 'Te faltan ' + txtPorc(d.falta), txtPorc(d.sobra) && 'te sobran ' + txtPorc(d.sobra)].filter(Boolean).join(' · ') + '.'}</p>
+    </section>`;
+  })()}
   <section class="card">
     <header><h2>Para la nutri</h2></header>
     <div class="seg">${[['esta', 'Esta semana'], ['pasada', 'Anterior'], ['14', '14 días'], ['30', '30 días']].map(([k, t]) => `<button class="${S.rango === k ? 'on' : ''}" data-a="rango" data-r="${k}">${t}</button>`).join('')}</div>
     ${resumenNutri()}
-    <div class="fila-b"><button class="btn prim" data-a="compartirNutri">Compartir</button><button class="btn" data-a="imprimirNutri">Imprimir / PDF</button></div>
+    <div class="fila-b"><button class="btn prim" data-a="compartirNutri">Mandar a la nutri</button><button class="btn" data-a="paraClaude">Analizar con Claude</button><button class="btn" data-a="imprimirNutri">PDF</button></div>
   </section>
   <section class="card">
     <header><h2>Tu cuerpo</h2><button class="link" data-a="nuevaMedida">+ Cargar medición</button></header>
@@ -875,7 +947,7 @@ function datosNutri() {
     const filas = COMIDAS.filter(c => tipos.has(c[0])).map(([t, n]) => {
       const r = regComida(f, t), p = pl.find(x => x.tipo === t);
       if (!r) sin++; else if (r.estado === 'ok') ok++; else if (r.estado === 'cambio') cambio++; else no++;
-      return { n, plan: r?.plan || p?.plan || '', r };
+      return { t, n, plan: r?.plan || p?.plan || '', r, ev: r ? evalComida(f, t) : null };
     });
     return { f, filas, int: rec('int:' + f)?.g };
   });
@@ -883,35 +955,55 @@ function datosNutri() {
   return { dias, detalle, ok, cambio, no, sin, total };
 }
 const comidasPlaneadas = f => comidasDelDia(f);
+// Cuenta del período: comidas en plan y qué grupo falta o sobra más seguido
+function balanceNutri(d) {
+  const c = { bien: 0, cerca: 0, fuera: 0, no: 0, libre: 0, sin: 0 }, falta = {}, sobra = {};
+  d.detalle.forEach(x => x.filas.forEach(y => {
+    if (!y.ev) return; c[y.ev.est]++;
+    if (y.ev.est === 'cerca' || y.ev.est === 'fuera') {
+      Object.entries(y.ev.falta).forEach(([g, v]) => falta[g] = (falta[g] || 0) + v);
+      Object.entries(y.ev.sobra).forEach(([g, v]) => sobra[g] = (sobra[g] || 0) + v);
+    }
+  }));
+  const marcadas = c.bien + c.cerca + c.fuera + c.no + c.libre + c.sin;
+  const top = o => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([g, v]) => `${PLUR[g]} (${v})`).join(' y ');
+  return { c, marcadas, pct: marcadas ? Math.round((c.bien + c.libre) / marcadas * 100) : 0, falta: top(falta), sobra: top(sobra) };
+}
+const ESTADOS = { bien: 'En plan', cerca: 'Cerca', fuera: 'Fuera de plan', no: 'No comió', libre: 'Libre', sin: 'Sin porciones' };
 function resumenNutri() {
   const d = datosNutri();
   if (!d.total) return '<p class="vacio">Todavía no marcaste comidas en este período.</p>';
-  const pct = Math.round(d.ok / d.total * 100);
+  const b = balanceNutri(d);
+  if (!b.marcadas) return `<p class="vacio">Todavía no marcaste comidas en este período${d.sin ? ` (${d.sin} sin marcar)` : ''}.</p>`;
   return `
-  <div class="trio"><div class="ok"><b>${d.ok}</b><small>Como estaba</small></div><div class="cambio"><b>${d.cambio}</b><small>Con cambios</small></div><div class="no"><b>${d.no}</b><small>No la hice</small></div></div>
-  <p class="frase">${pct}% de las comidas marcadas fueron como estaban planeadas${d.sin ? ` · ${d.sin} sin marcar` : ''}.</p>
-  <div class="nutri-lista">${d.detalle.filter(x => x.filas.some(y => y.r) || x.int).map(x => `
-    <div><b>${fechaCorta(x.f)}</b>${x.filas.filter(y => y.r && y.r.estado !== 'ok').map(y => `<p class="${y.r.estado}">${y.n}: ${y.r.estado === 'no' ? 'no la hice' : esc(y.r.variante || 'cambié')}${y.r.nota ? ' · ' + esc(y.r.nota) : ''}<small>Plan: ${esc(y.plan)}</small></p>`).join('') || '<p class="ok">Todo como estaba</p>'}</div>`).join('')}
+  <div class="nota-grande"><b>${b.pct}%</b><span>de las comidas marcadas, en plan${d.sin ? `<br>${d.sin} sin marcar` : ''}</span></div>
+  <div class="cuatro"><div class="v-bien"><b>${b.c.bien + b.c.libre}</b><small>En plan</small></div><div class="v-cerca"><b>${b.c.cerca}</b><small>Cerca</small></div><div class="v-fuera"><b>${b.c.fuera + b.c.sin}</b><small>Fuera</small></div><div class="v-no"><b>${b.c.no}</b><small>No comió</small></div></div>
+  ${b.falta || b.sobra ? `<p class="frase">${b.falta ? `Lo que más te falta: <b>${b.falta}</b>. ` : ''}${b.sobra ? `Lo que más te sobra: <b>${b.sobra}</b>.` : ''}</p>` : ''}
+  <div class="nutri-lista">${d.detalle.filter(x => x.filas.some(y => y.r)).map(x => `
+    <div><b>${fechaCorta(x.f)}</b>${x.filas.filter(y => y.ev && y.ev.est !== 'bien').map(y => `<p class="v-${y.ev.est}">${y.n}: ${esc(fraseEval(y.ev))}${y.r.variante ? ` · comió ${esc(y.r.variante)}` : ''}${y.r.nota ? ' · ' + esc(y.r.nota) : ''}<small>Tocaba: ${esc(y.plan)}</small></p>`).join('') || '<p class="v-bien">Todo en plan</p>'}</div>`).join('')}
   </div>`;
 }
 function textoNutri() {
-  const d = datosNutri(), c = cfg();
+  const d = datosNutri(), b = balanceNutri(d);
   const l = [`Registro de comidas · ${fechaCorta(d.dias[0])} al ${fechaCorta(d.dias[d.dias.length - 1])}`, ''];
-  l.push(`Como estaba planeado: ${d.ok} · Con cambios: ${d.cambio} · No la hice: ${d.no}${d.sin ? ' · Sin marcar: ' + d.sin : ''}`, '');
+  l.push(`${b.pct}% en plan · En plan: ${b.c.bien + b.c.libre} · Cerca: ${b.c.cerca} · Fuera: ${b.c.fuera + b.c.sin} · No comió: ${b.c.no}${d.sin ? ' · Sin marcar: ' + d.sin : ''}`);
+  if (b.falta) l.push(`Lo que más faltó: ${b.falta}`);
+  if (b.sobra) l.push(`Lo que más sobró: ${b.sobra}`);
+  l.push('');
   d.detalle.forEach(x => {
-    if (!x.filas.some(y => y.r) && !x.int) return;
+    if (!x.filas.some(y => y.r)) return;
     l.push(fechaLarga(x.f).replace(/^./, m => m.toUpperCase()));
     x.filas.forEach(y => {
-      if (!y.r) { l.push(`  ${y.n}: sin marcar (plan: ${y.plan})`); return; }
-      if (y.r.estado === 'ok') l.push(`  ${y.n}: ✓ ${y.plan}`);
-      else if (y.r.estado === 'no') l.push(`  ${y.n}: ✗ no la hice${y.r.nota ? ' (' + y.r.nota + ')' : ''}`);
-      else l.push(`  ${y.n}: ↺ ${y.r.variante || ''}${y.r.nota ? (y.r.variante ? ' · ' : '') + y.r.nota : ''} (plan: ${y.plan})`);
+      if (!y.r) { l.push(`  ${y.n}: sin marcar (tocaba: ${y.plan})`); return; }
+      const que = y.r.estado === 'cambio' ? (y.r.variante || 'otra cosa') : y.r.estado === 'no' ? 'no comió' : y.plan;
+      const det = y.ev.est !== 'bien' && y.ev.est !== 'no' && y.ev.dif ? ' (' + fraseEval(y.ev) + ')' : '';
+      const porc = y.r.x && y.r.estado === 'cambio' ? ' [' + txtPorc(y.r.x) + ']' : '';
+      l.push(`  ${y.n}: ${ESTADOS[y.ev.est]}${det} · ${que}${porc}${y.r.nota ? ' · ' + y.r.nota : ''}${y.r.estado !== 'ok' ? ' (tocaba: ' + y.plan + ')' : ''}`);
     });
-    if (x.int) l.push('  Porciones (intercambios): ' + GRUPOS.filter(([g]) => x.int[g]).map(([g, n]) => `${n} ${x.int[g]}${metas()[g] ? "/" + metas()[g] : ''}`).join(', '));
     l.push('');
   });
   const med = todos('med:').sort((a, b) => a.k < b.k ? 1 : -1).slice(0, 3);
-  if (med.length) { l.push('Medidas:'); const v = x => fmt(decimal(x)); med.forEach(m => l.push(`  ${fechaCorta(m.k.slice(4))}: ${[m.peso != null && v(m.peso) + ' kg', m.grasa != null && v(m.grasa) + '% grasa', m.musculo != null && v(m.musculo) + ' kg músculo', m.cintura != null && v(m.cintura) + ' cm cintura', m.pliegues != null && v(m.pliegues) + ' mm (6 pliegues)'].filter(Boolean).join(' · ')}`)); }
+  if (med.length) { l.push('Medidas:'); const v = x => fmt(decimal(x)); med.forEach(m => l.push(`  ${fechaCorta(m.k.slice(4))}: ${[m.peso != null && v(m.peso) + ' kg', m.grasa != null && v(m.grasa) + '% grasa', m.musculo != null && v(m.musculo) + ' kg músculo', m.cintura != null && v(m.cintura) + ' cm cintura'].filter(Boolean).join(' · ')}`)); }
   return l.join('\n');
 }
 function tablaMedidas() {
@@ -937,7 +1029,7 @@ function vRutina() {
   const porDia = d => rs.filter(r => !r.fecha && r.dias?.includes(d));
   const filaR = r => `<button class="rut-it" data-a="editarRut" data-id="${r.k.slice(4)}">
     <span class="h">${r.h}<br><small>${r.f}</small></span>
-    <span class="t"><b>${r.comida ? COMIDAS.find(c => c[0] === r.comida)[2] + ' ' : ''}${esc(r.t)}</b>${r.comida && r.plan ? `<small>${esc(r.plan)}</small>` : r.detalle ? `<small>${esc(r.detalle.slice(0, 70))}</small>` : ''}${frecuenciaTxt(r) ? `<em class="act otra">${frecuenciaTxt(r)}</em>` : ''}</span></button>`;
+    <span class="t"><b>${r.comida ? ic(COMIDAS.find(c => c[0] === r.comida)[2], 'mini') + ' ' : ''}${esc(r.t)}</b>${r.comida && r.plan ? `<small>${esc(r.plan)}</small>` : r.detalle ? `<small>${esc(r.detalle.slice(0, 70))}</small>` : ''}${frecuenciaTxt(r) ? `<em class="act otra">${frecuenciaTxt(r)}</em>` : ''}</span></button>`;
   const sueltos = rs.filter(r => r.fecha && r.fecha >= HOY());
   return `
   <p class="nota">Tu semana tipo. Lo que cambies acá vale para todas las semanas; para cambiar un solo día, tocá el evento en la Agenda.</p>
@@ -966,7 +1058,8 @@ function vPlan() {
     <p class="nota">¿La nutri te cambió el plan? Pasale el PDF a Claude y te arma el archivo. Al cargarlo, las comidas de tu rutina se reacomodan solas con las opciones nuevas.</p>
   </section>
   ${COMIDAS.map(([t, n, e]) => `<section class="card">
-    <header><h2>${e} ${n}</h2><button class="link" data-a="editarOpcion" data-tipo="${t}">+ Opción</button></header>
+    <header><h2>${ic(e)} ${n}</h2><button class="link" data-a="editarOpcion" data-tipo="${t}">+ Opción</button></header>
+    <p class="nota">Cada opción trae: ${txtPorc(objComida(t))}.</p>
     ${p.opciones[t].map((op, i) => `<button class="op" data-a="editarOpcion" data-tipo="${t}" data-i="${i}"><b>${esc(op.n)}</b>${op.d ? `<small>${esc(op.d)}</small>` : ''}${usos(op.n) ? `<em class="act ok">${usos(op.n)}</em>` : ''}</button>`).join('') || '<p class="vacio">Sin opciones cargadas.</p>'}
     ${t === 'almuerzo' || t === 'cena' ? `<label class="campo"><span>Cantidades</span><textarea class="in" rows="3" data-cant="${t}" placeholder="Ej: 1 mano de carne + 2/3 taza de arroz…">${esc(p.cantidades[t] || '')}</textarea></label>` : ''}
   </section>`).join('')}`;
@@ -1105,24 +1198,39 @@ function hojaEvento(ev, abrirOtra) {
   $('#hoja').dataset.ev = ev.id; $('#hoja').dataset.alc = 'uno';
 }
 function hojaComida(f, tipo, abrirCambio) {
-  const c = comidasDelDia(f).find(x => x.tipo === tipo) || { tipo, plan: '', variantes: plan().opciones[tipo] || [], hora: '' };
-  const r = regComida(f, tipo), info = COMIDAS.find(x => x[0] === tipo);
+  const c = comidasDelDia(f).find(x => x.tipo === tipo) || { tipo, plan: '', hora: '' };
+  const r = regComida(f, tipo), info = COMIDAS.find(x => x[0] === tipo), todas = plan().opciones[tipo] || [];
+  const x0 = r?.x || (r?.variante && porcOpcion(tipo, r.variante)) || porcOpcion(tipo, c.plan) || objComida(tipo);
+  const cambio = r?.estado === 'cambio' || abrirCambio;
   hoja(`
-    <h3 class="h-ic"><span class="e m-${tipo}">${ic(info[2])}</span>${info[1]} · ${fechaCorta(f)}</h3>
-    <p class="h-s">Plan: <b>${esc(c.plan)}</b></p>
-    ${c.detalle ? `<div class="desc">${esc(c.detalle)}</div>` : ''}
-    <div class="com-b grande">
-      <button class="${r?.estado === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${tipo}">${ic('check')} La hice</button>
-      <button class="${r?.estado === 'cambio' || abrirCambio ? 'on' : ''}" data-a="mostrarCambio">${ic('cambio')} Cambié</button>
-      <button class="${r?.estado === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${tipo}">${ic('x')} No</button>
+    <h3 class="h-ic"><span class="e m-${tipo}">${ic(info[2])}</span>${info[1]}<small class="h-f">${fechaCorta(f)}${c.hora ? ' · ' + c.hora : ''}</small></h3>
+    <div class="plan-hoy"><small>Tocaba</small><b>${esc(c.plan || 'Nada planeado')}</b>${c.detalle ? `<details><summary>Qué lleva y cuánto</summary><div class="desc">${esc(c.detalle)}</div></details>` : ''}</div>
+    <div class="tres">
+      <button class="t-ok ${r?.estado === 'ok' ? 'on' : ''}" data-a="comida" data-est="ok" data-f="${f}" data-tipo="${tipo}">${ic('check')}<span>Como el plan</span></button>
+      <button class="t-cambio ${cambio ? 'on' : ''}" data-a="mostrarCambio">${ic('cambio')}<span>Otra cosa</span></button>
+      <button class="t-no ${r?.estado === 'no' ? 'on' : ''}" data-a="comida" data-est="no" data-f="${f}" data-tipo="${tipo}">${ic('x')}<span>No comí</span></button>
     </div>
-    <div id="cambio" ${r?.estado === 'cambio' || abrirCambio || r?.estado === 'no' ? '' : 'hidden'}>
+    <div id="cambio" ${cambio ? '' : 'hidden'}>
       <h4>¿Qué comiste?</h4>
-      ${c.variantes.length ? `<div class="cats">${c.variantes.map(v => `<button class="${r?.variante === v.n ? 'on' : ''}" data-a="variante" data-v="${esc(v.n)}">${esc(v.n)}</button>`).join('')}</div>` : ''}
-      <textarea id="co-nota" class="in" rows="3" placeholder="Ej: pollo con fideos en vez de arroz · comí la mitad · salteé la merienda">${esc(r?.nota || '')}</textarea>
-      <button class="btn prim ancho" data-a="guardarComida" data-f="${f}" data-tipo="${tipo}">Guardar</button>
+      ${todas.length > 8 ? `<input class="in buscar" id="co-bus" placeholder="Buscar entre ${todas.length} opciones" autocomplete="off">` : ''}
+      <div class="cats opciones" id="co-ops">${todas.map(v => `<button class="${r?.variante === v.n ? 'on' : ''}" data-a="variante" data-v="${esc(v.n)}">${esc(v.n)}</button>`).join('')}</div>
+      <h4>Porciones <small>Si comiste distinto, ajustá con − y +</small></h4>
+      <div id="co-porc"></div>
+      <textarea id="co-nota" class="in" rows="2" placeholder="Nota para la nutri (opcional)">${esc(r?.nota || '')}</textarea>
+      <button class="btn prim ancho grande" data-a="guardarComida" data-f="${f}" data-tipo="${tipo}">Guardar</button>
     </div>`);
-  $('#hoja').dataset.var = r?.variante || '';
+  const h = $('#hoja'); h.dataset.var = r?.variante || ''; h.dataset.x = JSON.stringify(x0); h.dataset.tipo = tipo;
+  pintarPorc();
+}
+function pintarPorc() {
+  const h = $('#hoja'), el = $('#co-porc'); if (!el) return;
+  const x = JSON.parse(h.dataset.x || '{}'), obj = objComida(h.dataset.tipo), c = compararPorc(x, obj);
+  const e = { ...c, est: c.dif === 0 ? 'bien' : c.dif <= 1 ? 'cerca' : 'fuera' };
+  el.innerHTML = `<div class="porc">${GRUPOS.filter(([g]) => obj[g] || x[g]).map(([g, n]) => {
+    const v = x[g] || 0, m = obj[g] || 0;
+    return `<div class="${v === m ? 'ok' : v < m ? 'menos' : 'mas'}"><span>${n}</span><div><button data-a="porc" data-g="${g}" data-n="-1" aria-label="Menos ${n}">−</button><b>${v}<small>/${m}</small></b><button data-a="porc" data-g="${g}" data-n="1" aria-label="Más ${n}">+</button></div></div>`;
+  }).join('')}<button class="porc-mas" data-a="porcGrupos">+ Otro grupo</button></div>
+  <p class="veredicto v-${e.est}">${fraseEval(e)}</p>`;
 }
 function hojaNuevoEvento() {
   const vis = DEMO ? ['demo'] : S.cals.filter(c => calEscribible(c.id)).map(c => c.id), def = calPorDefecto();
@@ -1341,20 +1449,32 @@ const A = {
     const f = b.dataset.f, c = comidasDelDia(f).find(x => x.tipo === b.dataset.tipo) || { tipo: b.dataset.tipo, plan: '', hora: '' };
     marcarComida(f, c, b.dataset.est);
     if (!$('#hoja').hidden) cerrar();
-    if (b.dataset.est === 'no') aviso('Anotado. Tocá la comida si querés sumar qué pasó.');
+    const e = evalComida(f, c.tipo);
+    if (e) aviso(b.dataset.est === 'no' ? 'Anotado. Si querés, tocá la comida y contá qué pasó.' : 'Anotado · ' + fraseEval(e));
     render();
   },
   verComida(b) { hojaComida(b.dataset.f, b.dataset.tipo, !!b.dataset.cambio); },
   mostrarCambio(b) { $('#cambio').hidden = false; b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); },
-  variante(b) { const h = $('#hoja'), on = !b.classList.contains('on'); b.parentNode.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.toggle('on', on); h.dataset.var = on ? b.dataset.v : ''; },
+  variante(b) {
+    const h = $('#hoja'), on = !b.classList.contains('on');
+    b.parentNode.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.toggle('on', on);
+    h.dataset.var = on ? b.dataset.v : '';
+    const x = on ? porcOpcion(h.dataset.tipo, b.dataset.v) : null; if (x) { h.dataset.x = JSON.stringify(x); pintarPorc(); }
+  },
+  porc(b) {
+    const h = $('#hoja'), x = JSON.parse(h.dataset.x || '{}'), g = b.dataset.g;
+    x[g] = Math.max(0, (x[g] || 0) + +b.dataset.n); h.dataset.x = JSON.stringify(x); pintarPorc();
+  },
+  porcGrupos(b) {
+    const h = $('#hoja'), x = JSON.parse(h.dataset.x || '{}'), obj = objComida(h.dataset.tipo);
+    const falta = GRUPOS.find(([g]) => !obj[g] && !x[g]); if (!falta) return b.remove();
+    x[falta[0]] = 1; h.dataset.x = JSON.stringify(x); pintarPorc();
+  },
   guardarComida(b) {
     const f = b.dataset.f, tipo = b.dataset.tipo, c = comidasDelDia(f).find(x => x.tipo === tipo) || { tipo, plan: '', hora: '' };
-    const variante = $('#hoja').dataset.var, nota = $('#co-nota').value.trim();
-    const ya = regComida(f, tipo);
-    const estado = ya?.estado === 'no' && !variante ? 'no' : 'cambio';
-    if (estado === 'cambio' && !variante && !nota) return aviso('Elegí qué comiste o escribilo.');
-    poner(`meal:${f}:${tipo}`, { estado, plan: c.plan, hora: c.hora, variante, nota });
-    cerrar(); render();
+    const h = $('#hoja'), variante = h.dataset.var, nota = $('#co-nota').value.trim(), x = JSON.parse(h.dataset.x || '{}');
+    poner(`meal:${f}:${tipo}`, { estado: 'cambio', plan: c.plan, hora: c.hora, variante, nota, x });
+    cerrar(); aviso('Anotado · ' + fraseEval(evalComida(f, tipo))); render();
   },
   inter(b) {
     const k = 'int:' + S.dia, g = { ...(rec(k)?.g || {}) };
@@ -1362,6 +1482,10 @@ const A = {
   },
   metas: hojaMetas,
   guardarMetas() { const m = {}; GRUPOS.forEach(([g]) => { const v = +$('#mt-' + g).value; if (v) m[g] = v; }); cambiar('plan:main', { ...plan(), metas: m }); cerrar(); render(); },
+  async paraClaude() {
+    const t = 'Analizá mi registro de comidas contra mi plan de intercambios. Decime en qué fallé, qué patrón ves y qué cambiaría la semana que viene. Las notas son lo que escribí yo.\n\n' + textoNutri();
+    try { await navigator.clipboard.writeText(t); aviso('Copiado. Pegalo en el chat con Claude.'); } catch { hoja(`<h3>Copiá el texto</h3><textarea class="in" rows="14">${esc(t)}</textarea>`); }
+  },
   async compartirNutri() {
     const t = textoNutri();
     if (navigator.share) { try { await navigator.share({ title: 'Registro de comidas', text: t }); return; } catch (e) { if (e.name === 'AbortError') return; } }
@@ -1404,6 +1528,17 @@ const A = {
   borrarMov(b) { if (confirm('¿Borrar este movimiento?')) { borrar('mov:' + b.dataset.id); cerrar(); render(); } },
 
   verEvento(b) { const e = buscarEvento(b.dataset.id); if (e) hojaEvento(e, !!b.dataset.otra); },
+  comidaRapida() {
+    const f = HOY(), com = comidasDelDia(f), ahora = new Date();
+    const sin = com.filter(c => !regComida(f, c.tipo));
+    const c = sin.filter(c => conHora(f, c.hora) <= ahora).pop() || sin[0] || com[com.length - 1];
+    if (!c) return aviso('Hoy no hay comidas en tu rutina.');
+    cerrar(); setTimeout(() => hojaComida(f, c.tipo), 260);
+  },
+  todoBien() {
+    const f = HOY(); pendientesHoy(f).forEach(p => p.tipo === 'ev' ? marcarAct(p.e, 'ok') : marcarComida(f, p.c, 'ok'));
+    aviso('Listo, todo marcado como el plan.'); render();
+  },
   act(b) {
     const e = buscarEvento(b.dataset.id); if (!e) return;
     marcarAct(e, b.dataset.est); if (!$('#hoja').hidden) cerrar(); render();
@@ -1585,19 +1720,25 @@ document.addEventListener('change', e => {
   if (e.target.dataset.cant) { const p = plan(); cambiar('plan:main', { ...p, cantidades: { ...p.cantidades, [e.target.dataset.cant]: e.target.value.trim() } }); aviso('Guardado'); }
   if (e.target.id === 'pa-f') { const f = e.target.value; const ya = rec('pant:' + f)?.apps; if (ya) $('#pa-filas').innerHTML = ya.map(filaPantalla).join(''); }
 });
+document.addEventListener('input', e => {
+  if (e.target.id === 'co-bus') {
+    const q = e.target.value.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    $('#co-ops').querySelectorAll('button').forEach(b => { b.hidden = q && !b.textContent.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(q); });
+  }
+});
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('#hoja').hidden) cerrar();
   if (e.key === 'Enter' && e.target.id === 'mv-monto') A.guardarMov($('[data-a="guardarMov"]'));
 });
-$('#fab').addEventListener('click', () => {
+A.cargar = () => {
   if (S.tab === 'agenda') return A.nuevoEvento();
   if (S.tab === 'plata') return hojaMov('gasto');
   hoja(`<h3>¿Qué querés cargar?</h3><div class="menu-r">
-    <button class="t-gasto" data-a="nuevoMov" data-t="gasto"><span>${ic('gasto')}</span>Gasto</button><button class="t-ingreso" data-a="nuevoMov" data-t="ingreso"><span>${ic('ingreso')}</span>Ingreso</button>
+    <button class="t-comida" data-a="comidaRapida"><span>${ic('comidas')}</span>Comida</button><button class="t-gasto" data-a="nuevoMov" data-t="gasto"><span>${ic('gasto')}</span>Gasto</button><button class="t-ingreso" data-a="nuevoMov" data-t="ingreso"><span>${ic('ingreso')}</span>Ingreso</button>
     <button class="t-inversion" data-a="nuevoMov" data-t="inversion"><span>${ic('inversion')}</span>Inversión</button><button class="t-reunion" data-a="nuevoEvento"><span>${ic('calPlus')}</span>Reunión</button>
     <button class="t-tarea" data-a="editarTarea"><span>${ic('tarea')}</span>Tarea</button><button class="t-aviso" data-a="editarTarea" data-aviso="1"><span>${ic('aviso')}</span>Recordatorio</button>
     <button class="t-habito" data-a="editarHabito"><span>${ic('habito')}</span>Hábito</button><button class="t-pantalla" data-a="nuevaPantalla"><span>${ic('pantalla')}</span>Pantalla</button></div>`);
-});
+};
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   if (S.dia < HOY() && S.tab === 'hoy') S.dia = HOY();
