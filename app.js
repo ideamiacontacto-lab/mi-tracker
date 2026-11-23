@@ -67,7 +67,7 @@ function cfg() {
   const c = rec('cfg:main') || {};
   return {
     cats: c.cats || CATS_DEF, dolar: c.dolar || 0, metas: c.metas || {},
-    cals: c.cals || null, calDef: c.calDef || null, aviso: c.aviso ?? 10
+    cals: c.cals || null, calDef: c.calDef || null, aviso: c.aviso ?? 10, nombre: c.nombre || ''
   };
 }
 const setCfg = patch => cambiar('cfg:main', patch);
